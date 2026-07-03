@@ -1,0 +1,35 @@
+name: Pebble Build & Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Pebble App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build PBW
+        uses: clach04/github_action_pebble_build@main
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GabagoolTouch
+          path: build/*.pbw
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: build/*.pbw
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,4 @@
+build/
+.lock-waf_linux_build
+pebble_screenshot_*.png
+welcome.png

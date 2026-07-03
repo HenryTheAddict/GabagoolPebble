@@ -1,0 +1,99 @@
+{
+  "name": "gabagool-touch",
+  "author": "h3nry",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app",
+    "gabagool"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Gabagool.",
+    "uuid": "2f983ba5-0b09-49f3-9e5b-642ded6e6d71",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "dummy"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "MENU_ICON",
+          "file": "generated/menu_icon.png",
+          "menuIcon": true,
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_00",
+          "file": "generated/photo_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01",
+          "file": "generated/photo_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02",
+          "file": "generated/photo_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03",
+          "file": "generated/photo_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04",
+          "file": "generated/photo_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05",
+          "file": "generated/photo_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06",
+          "file": "generated/photo_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_00_00",
+          "file": "generated/audio_00_00.ad2"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_01_00",
+          "file": "generated/audio_01_00.ad2"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_01_01",
+          "file": "generated/audio_01_01.ad2"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_01_02",
+          "file": "generated/audio_01_02.ad2"
+        }
+      ]
+    }
+  }
+}

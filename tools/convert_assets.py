@@ -24,6 +24,7 @@ AUDIO_UPSAMPLE = AUDIO_RATE // AUDIO_SOURCE_RATE
 AUDIO_CHUNK_BYTES = 60 * 1024
 
 PHOTO_FILES = [
+    "welcome.png",
     "bigGabba.jpg",
     "gabagoolandmoremeats.jpg",
     "gabagoolandtomatos.jpg",
@@ -86,6 +87,28 @@ def crop_cover(image, target_w, target_h):
     return resized.crop((left, top, left + target_w, top + target_h))
 
 
+def crop_cover_background(image, target_h):
+    src_w, src_h = image.size
+    scale = target_h / src_h
+    new_w = math.ceil(src_w * scale)
+    if new_w > 320:
+        new_w = 320
+        scale = 320 / src_w
+        if src_h * scale < target_h:
+            scale = target_h / src_h
+            new_w = 320
+    else:
+        if new_w < 200:
+            scale = 200 / src_w
+            new_w = 200
+
+    new_h = math.ceil(src_h * scale)
+    resized = image.resize((math.ceil(src_w * scale), new_h), Image.Resampling.LANCZOS)
+    left = (resized.width - new_w) // 2
+    top = (resized.height - target_h) // 2
+    return resized.crop((left, top, left + new_w, top + target_h))
+
+
 def write_palette_png(image, path):
     palette = []
     for r, g, b in PEBBLE_PALETTE:
@@ -101,13 +124,15 @@ def write_palette_png(image, path):
 
 def convert_images():
     image_entries = []
+    image_widths = []
     for index, name in enumerate(PHOTO_FILES):
         source = ROOT / name
         if not source.exists():
             raise FileNotFoundError(source)
         image = Image.open(source).convert("RGB")
-        strip = crop_cover(image, PAN_W, SCREEN_H)
+        strip = crop_cover_background(image, SCREEN_H)
         dithered = dither_to_pebble_palette(strip)
+        image_widths.append(dithered.width)
         out_path = GENERATED / f"photo_{index:02d}.png"
         write_palette_png(dithered, out_path)
         image_entries.append({
@@ -117,7 +142,7 @@ def convert_images():
             "memoryFormat": "8Bit"
         })
 
-    icon_source = Image.open(ROOT / PHOTO_FILES[0]).convert("RGB")
+    icon_source = Image.open(ROOT / PHOTO_FILES[1]).convert("RGB")
     icon = dither_to_pebble_palette(crop_cover(icon_source, 25, 25))
     icon_path = GENERATED / "menu_icon.png"
     write_palette_png(icon, icon_path)
@@ -128,7 +153,83 @@ def convert_images():
         "menuIcon": True,
         "memoryFormat": "8Bit"
     }
-    return icon_entry, image_entries
+    return icon_entry, image_entries, image_widths
+
+
+def convert_pet_assets():
+    static_files = [
+        "gubbyshapedegg.png",
+        "eggtap1.png",
+        "eggtap2.png",
+        "eggtap3.png",
+        "deadgubby.png"
+    ]
+    for name in static_files:
+        src = ROOT / name
+        if src.exists():
+            shutil.copy2(src, GENERATED / name)
+            
+    gif_files = [
+        ("gubby.gif", "gubby.png"),
+        ("gubbypetted.gif", "gubbypetted.png"),
+        ("gubbydeath.gif", "gubbydeath.png")
+    ]
+    ffmpeg = ffmpeg_command()
+    for src_name, dst_name in gif_files:
+        src = ROOT / src_name
+        if src.exists():
+            subprocess.run([
+                ffmpeg, "-y", "-i", str(src), "-f", "apng", str(GENERATED / dst_name)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            
+    pet_entries = [
+        {
+            "type": "bitmap",
+            "name": "PET_EGG",
+            "file": "generated/gubbyshapedegg.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "PET_EGG_TAP1",
+            "file": "generated/eggtap1.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "PET_EGG_TAP2",
+            "file": "generated/eggtap2.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "PET_EGG_TAP3",
+            "file": "generated/eggtap3.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "PET_DEAD",
+            "file": "generated/deadgubby.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "raw",
+            "name": "PET_GUBBY_ANIM",
+            "file": "generated/gubby.png"
+        },
+        {
+            "type": "raw",
+            "name": "PET_PETTED_ANIM",
+            "file": "generated/gubbypetted.png"
+        },
+        {
+            "type": "raw",
+            "name": "PET_DEATH_ANIM",
+            "file": "generated/gubbydeath.png"
+        }
+    ]
+    return pet_entries
 
 
 def ffmpeg_command():
@@ -261,14 +362,15 @@ def convert_audio():
     return entries, tracks_info
 
 
-def update_package(icon_entry, image_entries, audio_entries):
+def update_package(icon_entry, image_entries, audio_entries, pet_entries):
     package = json.loads(PACKAGE.read_text())
-    package["pebble"]["resources"]["media"] = [icon_entry] + image_entries + audio_entries
+    package["pebble"]["resources"]["media"] = [icon_entry] + image_entries + audio_entries + pet_entries
     PACKAGE.write_text(json.dumps(package, indent=2) + "\n")
 
 
-def write_header(image_entries, tracks_info):
+def write_header(image_entries, image_widths, tracks_info):
     image_ids = ", ".join(f"RESOURCE_ID_{entry['name']}" for entry in image_entries)
+    widths_str = ", ".join(str(w) for w in image_widths)
     
     track_definitions = ""
     track_initializers = []
@@ -303,6 +405,10 @@ static const uint32_t GABAGOOL_IMAGE_RESOURCE_IDS[GABAGOOL_IMAGE_COUNT] = {{
   {image_ids}
 }};
 
+static const uint16_t GABAGOOL_IMAGE_WIDTHS[GABAGOOL_IMAGE_COUNT] = {{
+  {widths_str}
+}};
+
 {track_definitions}
 typedef struct {{
   uint32_t total_samples;
@@ -322,10 +428,11 @@ def main():
     parser.parse_args()
 
     GENERATED.mkdir(parents=True, exist_ok=True)
-    icon_entry, image_entries = convert_images()
+    icon_entry, image_entries, image_widths = convert_images()
     audio_entries, tracks_info = convert_audio()
-    update_package(icon_entry, image_entries, audio_entries)
-    write_header(image_entries, tracks_info)
+    pet_entries = convert_pet_assets()
+    update_package(icon_entry, image_entries, audio_entries, pet_entries)
+    write_header(image_entries, image_widths, tracks_info)
     
     total_samples = sum(t["total_samples"] for t in tracks_info)
     encoded_bytes = sum(t["encoded_bytes"] for t in tracks_info)

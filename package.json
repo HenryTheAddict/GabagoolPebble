@@ -74,6 +74,12 @@
           "memoryFormat": "8Bit"
         },
         {
+          "type": "bitmap",
+          "name": "IMAGE_07",
+          "file": "generated/photo_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
           "type": "raw",
           "name": "AUDIO_00_00",
           "file": "generated/audio_00_00.ad2"
@@ -92,6 +98,51 @@
           "type": "raw",
           "name": "AUDIO_01_02",
           "file": "generated/audio_01_02.ad2"
+        },
+        {
+          "type": "bitmap",
+          "name": "PET_EGG",
+          "file": "generated/gubbyshapedegg.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "PET_EGG_TAP1",
+          "file": "generated/eggtap1.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "PET_EGG_TAP2",
+          "file": "generated/eggtap2.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "PET_EGG_TAP3",
+          "file": "generated/eggtap3.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "PET_DEAD",
+          "file": "generated/deadgubby.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "raw",
+          "name": "PET_GUBBY_ANIM",
+          "file": "generated/gubby.png"
+        },
+        {
+          "type": "raw",
+          "name": "PET_PETTED_ANIM",
+          "file": "generated/gubbypetted.png"
+        },
+        {
+          "type": "raw",
+          "name": "PET_DEATH_ANIM",
+          "file": "generated/gubbydeath.png"
         }
       ]
     }

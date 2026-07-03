@@ -11,6 +11,9 @@
 #define AUDIO_PCM_BUFFER (AUDIO_ENCODED_BUFFER * 4 * GABAGOOL_AUDIO_UPSAMPLE)
 #define GABAGOOL_MIN(a, b) ((a) < (b) ? (a) : (b))
 
+#define PERSIST_KEY_PET_STATE 100
+#define PERSIST_KEY_LAST_PET_TIME 101
+
 typedef enum {
   TransitionSlide = 0,
   TransitionMosaic,
@@ -19,6 +22,23 @@ typedef enum {
   TransitionWipe,
   TransitionCount
 } TransitionKind;
+
+typedef enum {
+  PetStateEgg = 0,
+  PetStateEggTap1,
+  PetStateEggTap2,
+  PetStateEggTap3,
+  PetStateHatching,
+  PetStateNormal,
+  PetStatePetted,
+  PetStateDead
+} PetState;
+
+static void start_audio(void);
+static void stop_audio(void);
+static void play_random_track(void);
+static void set_pet_animation(uint32_t resource_id);
+static GBitmap *load_image(int index);
 
 static Window *s_window;
 static Layer *s_canvas;
@@ -34,13 +54,31 @@ static int s_transition_ms;
 static bool s_transitioning;
 static TransitionKind s_transition_kind;
 
-static GBitmap *load_image(int index);
+// Pet state variables
+static PetState s_pet_state = PetStateEgg;
+static int s_egg_taps = 0;
+static int s_pet_x = 84;
+static int s_pet_y = 98;
+static int s_pet_dx = 3;
+static int s_pet_dy = 2;
+
+static GBitmapSequence *s_pet_seq = NULL;
+static GBitmap *s_pet_frame_bitmap = NULL;
+static uint32_t s_pet_frame_delay_ms = 100;
+static uint32_t s_pet_frame_elapsed_ms = 0;
+
+static uint32_t s_last_pet_time = 0;
+static bool s_pet_grabbed = false;
+static int s_rub_count = 0;
+static int s_last_rub_dir = 0;
+static int s_hatch_progress = 0;
+static int s_flash_frames = 0;
+static int s_pet_petted_frames = 0;
+
+static GBitmap *s_static_pet_bitmap = NULL;
+static uint32_t s_static_pet_resource_id = 0;
 
 #if defined(PBL_SPEAKER)
-static void start_audio(void);
-static void stop_audio(void);
-static void play_random_track(void);
-
 static bool s_audio_active;
 static ResHandle s_audio_handle;
 static uint32_t s_audio_chunk_index;
@@ -68,7 +106,11 @@ static int modulo_index(int value) {
 }
 
 static int pan_offset_for(int image_index, int elapsed_ms) {
-  int max_offset = GABAGOOL_PAN_W - GABAGOOL_SCREEN_W;
+  int image_w = GABAGOOL_IMAGE_WIDTHS[image_index];
+  int max_offset = image_w - GABAGOOL_SCREEN_W;
+  if (max_offset <= 0) {
+    return 0;
+  }
   int clamped = elapsed_ms;
   if (clamped < 0) {
     clamped = 0;
@@ -96,8 +138,9 @@ static void draw_panned_bitmap(GContext *ctx, GBitmap *bitmap, int image_index, 
     graphics_fill_rect(ctx, GRect(0, 0, GABAGOOL_SCREEN_W, GABAGOOL_SCREEN_H), 0, GCornerNone);
     return;
   }
+  int image_w = GABAGOOL_IMAGE_WIDTHS[image_index];
   int offset = pan_offset_for(image_index, elapsed_ms);
-  graphics_draw_bitmap_in_rect(ctx, bitmap, GRect(-offset, 0, GABAGOOL_PAN_W, GABAGOOL_SCREEN_H));
+  graphics_draw_bitmap_in_rect(ctx, bitmap, GRect(-offset, 0, image_w, GABAGOOL_SCREEN_H));
 }
 
 static void fill_black_rect(GContext *ctx, GRect rect) {
@@ -111,32 +154,28 @@ static uint16_t tile_hash(int x, int y) {
   return (uint16_t)((n >> 16) & 0x3ff);
 }
 
-static void apply_tile_effect(GContext *ctx, int progress, bool checker, bool incoming) {
-  const int tile = checker ? 20 : 16;
-
-  for (int y = 0; y < GABAGOOL_SCREEN_H; y += tile) {
-    for (int x = 0; x < GABAGOOL_SCREEN_W; x += tile) {
-      int threshold;
-      if (checker) {
-        threshold = (((x / tile) + (y / tile)) & 1) ? 350 : 50;
+static void apply_tile_effect(GContext *ctx, int progress, bool is_checker, bool incoming) {
+  int tile_size = is_checker ? 20 : 16;
+  for (int y = 0; y < GABAGOOL_SCREEN_H; y += tile_size) {
+    for (int x = 0; x < GABAGOOL_SCREEN_W; x += tile_size) {
+      int th = tile_hash(x, y);
+      bool reveal = is_checker ? (((x / tile_size + y / tile_size) & 1) ? (th < progress) : (th >= (1024 - progress))) : (th < progress);
+      if (incoming) {
+        if (!reveal) {
+          fill_black_rect(ctx, GRect(x, y, tile_size, tile_size));
+        }
       } else {
-        threshold = tile_hash(x / tile, y / tile);
-      }
-      
-      bool show_black = incoming ? (progress < threshold) : (progress >= threshold);
-      if (show_black) {
-        GRect rect = GRect(x, y, GABAGOOL_MIN(tile, GABAGOOL_SCREEN_W - x),
-                           GABAGOOL_MIN(tile, GABAGOOL_SCREEN_H - y));
-        fill_black_rect(ctx, rect);
+        if (reveal) {
+          fill_black_rect(ctx, GRect(x, y, tile_size, tile_size));
+        }
       }
     }
   }
 }
 
 static void apply_blinds_effect(GContext *ctx, int progress, bool incoming) {
-  const int stripe_w = 20;
+  int stripe_w = 8;
   int reveal_h = (GABAGOOL_SCREEN_H * progress) / 1024;
-
   for (int x = 0; x < GABAGOOL_SCREEN_W; x += stripe_w) {
     int local_h = reveal_h - (((x / stripe_w) & 1) ? 24 : 0);
     if (local_h < 0) {
@@ -203,18 +242,19 @@ static void draw_transition(GContext *ctx) {
   if (s_transition_kind == TransitionSlide) {
     int x = (GABAGOOL_SCREEN_W * progress) / 1024;
     int current_offset = pan_offset_for(s_current_index, incoming ? 0 : SLIDE_MS);
+    int curr_w = GABAGOOL_IMAGE_WIDTHS[s_current_index];
     if (!incoming && s_current_bitmap) {
+      int target_x = -current_offset - ((curr_w - current_offset) * x) / GABAGOOL_SCREEN_W;
       graphics_draw_bitmap_in_rect(ctx, s_current_bitmap,
-                                   GRect(-current_offset - x, 0, GABAGOOL_PAN_W, GABAGOOL_SCREEN_H));
+                                   GRect(target_x, 0, curr_w, GABAGOOL_SCREEN_H));
     } else if (incoming && s_current_bitmap) {
+      int target_x = GABAGOOL_SCREEN_W - ((GABAGOOL_SCREEN_W + current_offset) * x) / GABAGOOL_SCREEN_W;
       graphics_draw_bitmap_in_rect(ctx, s_current_bitmap,
-                                   GRect(GABAGOOL_SCREEN_W - x - current_offset, 0,
-                                         GABAGOOL_PAN_W, GABAGOOL_SCREEN_H));
+                                   GRect(target_x, 0, curr_w, GABAGOOL_SCREEN_H));
     }
     return;
   }
 
-  // Draw the full background first
   if (incoming) {
     draw_panned_bitmap(ctx, s_current_bitmap, s_current_index, 0);
   } else {
@@ -240,6 +280,76 @@ static void draw_transition(GContext *ctx) {
   }
 }
 
+static void draw_static_sprite(GContext *ctx, uint32_t res_id, GRect rect) {
+  if (s_static_pet_resource_id != res_id) {
+    if (s_static_pet_bitmap) {
+      gbitmap_destroy(s_static_pet_bitmap);
+    }
+    s_static_pet_bitmap = gbitmap_create_with_resource(res_id);
+    s_static_pet_resource_id = res_id;
+  }
+  if (s_static_pet_bitmap) {
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
+    graphics_draw_bitmap_in_rect(ctx, s_static_pet_bitmap, rect);
+    graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+  }
+}
+
+static void draw_pet(GContext *ctx) {
+  if (s_flash_frames > 0) {
+    s_flash_frames--;
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_fill_rect(ctx, GRect(0, 0, GABAGOOL_SCREEN_W, GABAGOOL_SCREEN_H), 0, GCornerNone);
+    return;
+  }
+
+  switch (s_pet_state) {
+    case PetStateEgg:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_EGG, GRect(36, 50, 128, 128));
+      break;
+    case PetStateEggTap1:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP1, GRect(36, 50, 128, 128));
+      break;
+    case PetStateEggTap2:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP2, GRect(36, 50, 128, 128));
+      break;
+    case PetStateEggTap3:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP3, GRect(36, 50, 128, 128));
+      break;
+    case PetStateHatching:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP3, GRect(36, 50, 128, 128));
+      if (s_hatch_progress < 60) {
+        graphics_context_set_stroke_color(ctx, GColorPastelYellow);
+        graphics_context_set_stroke_width(ctx, 4);
+        int seed = s_hatch_progress ^ 0x5A;
+        for (int i = 0; i < 5; i++) {
+          int target_x = 20 + i * 40 + (seed % 15);
+          graphics_draw_line(ctx, GPoint(100, 0), GPoint(target_x, 114));
+          seed = seed * 31 + 17;
+        }
+      } else {
+        int y = (s_hatch_progress - 60) * 3;
+        if (s_pet_frame_bitmap) {
+          graphics_context_set_compositing_mode(ctx, GCompOpSet);
+          graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(84, y, 32, 32));
+          graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+        }
+      }
+      break;
+    case PetStateNormal:
+    case PetStatePetted:
+      if (s_pet_frame_bitmap) {
+        graphics_context_set_compositing_mode(ctx, GCompOpSet);
+        graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(s_pet_x, s_pet_y, 32, 32));
+        graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+      }
+      break;
+    case PetStateDead:
+      draw_static_sprite(ctx, RESOURCE_ID_PET_DEAD, GRect(s_pet_x, s_pet_y, 32, 32));
+      break;
+  }
+}
+
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   (void)layer;
   if (s_transitioning) {
@@ -247,6 +357,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   } else {
     draw_panned_bitmap(ctx, s_current_bitmap, s_current_index, s_phase_ms);
   }
+  draw_pet(ctx);
 }
 
 static GBitmap *load_image(int index) {
@@ -276,6 +387,103 @@ static void finish_transition(void) {
   s_transitioning = false;
 }
 
+static void set_pet_animation(uint32_t resource_id) {
+  if (s_pet_seq) {
+    gbitmap_sequence_destroy(s_pet_seq);
+    s_pet_seq = NULL;
+  }
+  if (s_pet_frame_bitmap) {
+    gbitmap_destroy(s_pet_frame_bitmap);
+    s_pet_frame_bitmap = NULL;
+  }
+  if (resource_id == 0) {
+    return;
+  }
+  s_pet_seq = gbitmap_sequence_create_with_resource(resource_id);
+  if (s_pet_seq) {
+    s_pet_frame_bitmap = gbitmap_create_blank(gbitmap_sequence_get_bitmap_size(s_pet_seq), GBitmapFormat8Bit);
+    gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
+    s_pet_frame_elapsed_ms = 0;
+  }
+}
+
+static void trigger_breeding(void) {
+  s_pet_state = PetStateEgg;
+  s_egg_taps = 0;
+  s_pet_grabbed = false;
+  s_rub_count = 0;
+  s_last_rub_dir = 0;
+  s_flash_frames = 4;
+  persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+  set_pet_animation(0);
+}
+
+static void update_pet_logic(void) {
+  if (s_pet_state == PetStateHatching) {
+    s_hatch_progress += 2;
+    if (s_hatch_progress == 60) {
+      set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
+    }
+    if (s_hatch_progress >= 100) {
+      s_pet_state = PetStateNormal;
+      s_pet_x = 84;
+      s_pet_y = 114;
+      s_pet_dx = 3;
+      s_pet_dy = 2;
+      s_last_pet_time = time(NULL);
+      persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
+      set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
+    }
+    return;
+  }
+
+  if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    if (time(NULL) - s_last_pet_time > 180) {
+      s_pet_state = PetStateDead;
+      persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      set_pet_animation(0);
+      return;
+    }
+
+    if (s_pet_state == PetStatePetted) {
+      s_pet_petted_frames++;
+      if (s_pet_petted_frames >= 40) {
+        s_pet_state = PetStateNormal;
+        s_pet_petted_frames = 0;
+        set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
+      }
+    }
+
+    if (!s_pet_grabbed) {
+      s_pet_x += s_pet_dx;
+      s_pet_y += s_pet_dy;
+      if (s_pet_x <= 0) {
+        s_pet_x = 0; s_pet_dx = -s_pet_dx;
+      } else if (s_pet_x >= GABAGOOL_SCREEN_W - 32) {
+        s_pet_x = GABAGOOL_SCREEN_W - 32; s_pet_dx = -s_pet_dx;
+      }
+      if (s_pet_y <= 0) {
+        s_pet_y = 0; s_pet_dy = -s_pet_dy;
+      } else if (s_pet_y >= GABAGOOL_SCREEN_H - 32) {
+        s_pet_y = GABAGOOL_SCREEN_H - 32; s_pet_dy = -s_pet_dy;
+      }
+    }
+  }
+
+  if (s_pet_seq && s_pet_frame_bitmap) {
+    s_pet_frame_elapsed_ms += FRAME_MS;
+    if (s_pet_frame_elapsed_ms >= s_pet_frame_delay_ms) {
+      s_pet_frame_elapsed_ms = 0;
+      bool next_frame = gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
+      if (!next_frame) {
+        gbitmap_sequence_restart(s_pet_seq);
+        gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
+      }
+    }
+  }
+}
+
 static void frame_timer_callback(void *context) {
   (void)context;
   if (s_transitioning) {
@@ -289,6 +497,8 @@ static void frame_timer_callback(void *context) {
       begin_transition(1);
     }
   }
+
+  update_pet_logic();
 
   layer_mark_dirty(s_canvas);
   s_frame_timer = app_timer_register(FRAME_MS, frame_timer_callback, NULL);
@@ -454,11 +664,10 @@ static void start_audio(void) {
 }
 
 static void stop_audio(void) {
-  if (!s_audio_active) {
-    return;
+  if (s_audio_active) {
+    speaker_stream_close();
+    s_audio_active = false;
   }
-  s_audio_active = false;
-  speaker_stop();
 }
 #else
 static void start_audio(void) {
@@ -492,15 +701,53 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   reset_backlight();
-#if defined(PBL_SPEAKER)
-  if (s_audio_active) {
-    stop_audio();
-  } else {
-    start_audio();
+
+  if (s_pet_state == PetStateEgg) {
+    s_egg_taps = 1;
+    s_pet_state = PetStateEggTap1;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+  } else if (s_pet_state == PetStateEggTap1) {
+    s_egg_taps = 2;
+    s_pet_state = PetStateEggTap2;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+  } else if (s_pet_state == PetStateEggTap2) {
+    s_egg_taps = 3;
+    s_pet_state = PetStateEggTap3;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+  } else if (s_pet_state == PetStateEggTap3) {
+    s_egg_taps = 4;
+    s_pet_state = PetStateHatching;
+    s_hatch_progress = 0;
+  } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    s_pet_state = PetStatePetted;
+    s_pet_petted_frames = 0;
+    s_last_pet_time = time(NULL);
+    persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
+    set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+  } else if (s_pet_state == PetStateDead) {
+    s_pet_state = PetStateEgg;
+    s_egg_taps = 0;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
   }
-#else
-  start_audio();
-#endif
+}
+
+static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  reset_backlight();
+  if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    s_pet_grabbed = true;
+    s_pet_x = GABAGOOL_SCREEN_W - 32;
+    s_rub_count = 0;
+    s_last_rub_dir = 0;
+  }
+}
+
+static void select_long_click_release_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  reset_backlight();
+  s_pet_grabbed = false;
 }
 
 static void select_double_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -519,20 +766,45 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   reset_backlight();
-  begin_transition(-1);
+  if (s_pet_grabbed) {
+    s_pet_y -= 15;
+    if (s_pet_y < 0) s_pet_y = 0;
+    if (s_last_rub_dir != -1) {
+      s_rub_count++;
+      s_last_rub_dir = -1;
+      if (s_rub_count >= 8) {
+        trigger_breeding();
+      }
+    }
+  } else {
+    begin_transition(-1);
+  }
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   reset_backlight();
-  begin_transition(1);
+  if (s_pet_grabbed) {
+    s_pet_y += 15;
+    if (s_pet_y > GABAGOOL_SCREEN_H - 32) s_pet_y = GABAGOOL_SCREEN_H - 32;
+    if (s_last_rub_dir != 1) {
+      s_rub_count++;
+      s_last_rub_dir = 1;
+      if (s_rub_count >= 8) {
+        trigger_breeding();
+      }
+    }
+  } else {
+    begin_transition(1);
+  }
 }
 
 static void click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
   window_multi_click_subscribe(BUTTON_ID_SELECT, 2, 2, 0, true, select_double_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, select_long_click_release_handler);
   window_single_click_subscribe(BUTTON_ID_UP, up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, down_click_handler);
 }
@@ -546,6 +818,35 @@ static void window_load(Window *window) {
   s_current_bitmap = load_image(0);
   s_frame_timer = app_timer_register(FRAME_MS, frame_timer_callback, NULL);
   reset_backlight();
+
+  // Load persistent pet state
+  if (persist_exists(PERSIST_KEY_PET_STATE)) {
+    s_pet_state = persist_read_int(PERSIST_KEY_PET_STATE);
+  } else {
+    s_pet_state = PetStateEgg;
+  }
+  
+  if (persist_exists(PERSIST_KEY_LAST_PET_TIME)) {
+    s_last_pet_time = persist_read_int(PERSIST_KEY_LAST_PET_TIME);
+  } else {
+    s_last_pet_time = time(NULL);
+  }
+  
+  // Offline age check (10 minutes)
+  if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    if (time(NULL) - s_last_pet_time > 600) {
+      s_pet_state = PetStateDead;
+      persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    }
+  }
+
+  // Load animation if active
+  if (s_pet_state == PetStateNormal) {
+    set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
+  } else if (s_pet_state == PetStatePetted) {
+    set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+  }
+
 #if defined(PBL_SPEAKER)
   s_audio_track_index = rand() % GABAGOOL_AUDIO_TRACK_COUNT;
 #endif
@@ -574,9 +875,102 @@ static void window_unload(Window *window) {
     gbitmap_destroy(s_current_bitmap);
     s_current_bitmap = NULL;
   }
+  if (s_static_pet_bitmap) {
+    gbitmap_destroy(s_static_pet_bitmap);
+    s_static_pet_bitmap = NULL;
+  }
+  set_pet_animation(0);
   if (s_canvas) {
     layer_destroy(s_canvas);
     s_canvas = NULL;
+  }
+}
+
+static void touch_handler(const TouchEvent *event, void *context) {
+  (void)context;
+  reset_backlight();
+  if (!event) {
+    return;
+  }
+  
+  int tx = event->x;
+  int ty = event->y;
+  
+  if (event->type == TouchEvent_Touchdown) {
+    if (s_pet_state == PetStateEgg) {
+      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+        s_egg_taps = 1;
+        s_pet_state = PetStateEggTap1;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      }
+    } else if (s_pet_state == PetStateEggTap1) {
+      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+        s_egg_taps = 2;
+        s_pet_state = PetStateEggTap2;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      }
+    } else if (s_pet_state == PetStateEggTap2) {
+      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+        s_egg_taps = 3;
+        s_pet_state = PetStateEggTap3;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      }
+    } else if (s_pet_state == PetStateEggTap3) {
+      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+        s_egg_taps = 4;
+        s_pet_state = PetStateHatching;
+        s_hatch_progress = 0;
+      }
+    } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+      // Touch down on pet to grab him!
+      if (tx >= s_pet_x && tx <= s_pet_x + 32 && ty >= s_pet_y && ty <= s_pet_y + 32) {
+        s_pet_grabbed = true;
+        s_rub_count = 0;
+        s_last_rub_dir = 0;
+        s_pet_x = tx - 16;
+        s_pet_y = ty - 16;
+        
+        s_pet_state = PetStatePetted;
+        s_pet_petted_frames = 0;
+        s_last_pet_time = time(NULL);
+        persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
+        set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+      }
+    } else if (s_pet_state == PetStateDead) {
+      if (tx >= s_pet_x && tx <= s_pet_x + 32 && ty >= s_pet_y && ty <= s_pet_y + 32) {
+        s_pet_state = PetStateEgg;
+        s_egg_taps = 0;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      }
+    }
+  } else if (event->type == TouchEvent_PositionUpdate) {
+    if (s_pet_grabbed) {
+      s_pet_x = GABAGOOL_SCREEN_W - 32;
+      s_pet_y = ty - 16;
+      if (s_pet_y < 0) s_pet_y = 0;
+      if (s_pet_y > GABAGOOL_SCREEN_H - 32) s_pet_y = GABAGOOL_SCREEN_H - 32;
+      
+      static int s_last_touch_y = 0;
+      int new_dir = 0;
+      if (ty < s_last_touch_y - 8) {
+        new_dir = -1;
+      } else if (ty > s_last_touch_y + 8) {
+        new_dir = 1;
+      }
+      
+      if (new_dir != 0 && new_dir != s_last_rub_dir) {
+        s_rub_count++;
+        s_last_rub_dir = new_dir;
+        if (s_rub_count >= 8) {
+          trigger_breeding();
+        }
+      }
+      s_last_touch_y = ty;
+    }
+  } else if (event->type == TouchEvent_Liftoff) {
+    if (s_pet_grabbed) {
+      s_pet_grabbed = false;
+    }
   }
 }
 
@@ -593,11 +987,13 @@ static void init(void) {
   speaker_set_finish_callback(speaker_finished_callback, NULL);
 #endif
   accel_tap_service_subscribe(accel_tap_handler);
+  touch_service_subscribe(touch_handler, NULL);
   window_stack_push(s_window, true);
 }
 
 static void deinit(void) {
   accel_tap_service_unsubscribe();
+  touch_service_unsubscribe();
 #if defined(PBL_SPEAKER)
   speaker_set_finish_callback(NULL, NULL);
 #endif

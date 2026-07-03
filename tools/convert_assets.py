@@ -156,6 +156,33 @@ def convert_images():
     return icon_entry, image_entries, image_widths
 
 
+def convert_frame_to_pebble_png8(frame):
+    rgba = frame.convert("RGBA")
+    w, h = rgba.size
+    palette_data = []
+    for r, g, b in PEBBLE_PALETTE:
+        palette_data.extend([r, g, b])
+    palette_data.extend([0] * (765 - len(palette_data)))
+    palette_data.extend([0, 255, 0])
+    out = Image.new("P", (w, h))
+    out.putpalette(palette_data)
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = rgba.getpixel((x, y))
+            if a < 128:
+                out.putpixel((x, y), 255)
+            else:
+                best_idx = 0
+                best_dist = 1 << 30
+                for idx, (pr, pg, pb) in enumerate(PEBBLE_PALETTE):
+                    dist = (r - pr)**2 + (g - pg)**2 + (b - pb)**2
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+                out.putpixel((x, y), best_idx)
+    return out
+
+
 def convert_pet_assets():
     static_files = [
         "gubbyshapedegg.png",
@@ -174,12 +201,11 @@ def convert_pet_assets():
         ("gubbypetted.gif", "gubbypetted.png"),
         ("gubbydeath.gif", "gubbydeath.png")
     ]
-    ffmpeg = ffmpeg_command()
     for src_name, dst_name in gif_files:
         src = ROOT / src_name
         if src.exists():
             subprocess.run([
-                ffmpeg, "-y", "-i", str(src), "-f", "apng", str(GENERATED / dst_name)
+                "wsl", "/home/h3nry/.local/bin/gif2apng", "-z0", src_name, f"resources/generated/{dst_name}"
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             
     pet_entries = [

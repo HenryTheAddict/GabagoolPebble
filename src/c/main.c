@@ -18,6 +18,9 @@
 #define PET_MAX_SPEED 5.5f
 #define MAX_GUBBYS 8
 #define SFX_COOLDOWN_MS 250
+#define FLING_KILL_SPEED 9.0f
+#define EGG_HOLD_MS 1000
+#define AUDIO_READ_BUFFER 64
 
 #define PERSIST_KEY_PET_STATE 100
 #define PERSIST_KEY_LAST_PET_TIME 101
@@ -100,6 +103,8 @@ static int s_last_rub_dir = 0;
 static int s_hatch_progress = 0;
 static int s_flash_frames = 0;
 static int s_pet_petted_frames = 0;
+static int s_egg_hold_ms = 0;
+static bool s_egg_touching = false;
 static GubbyPet s_gubbys[MAX_GUBBYS];
 static int s_gubby_count = 0;
 static int s_grabbed_gubby = -1;
@@ -215,8 +220,26 @@ static void drag_pet_to(int tx, int ty) {
   set_gubby_position(gubby, tx - gubby->grab_offset_x, ty - gubby->grab_offset_y);
 }
 
+static void kill_gubby(int index) {
+  if (index < 0 || index >= MAX_GUBBYS || !s_gubbys[index].active) {
+    return;
+  }
+  s_gubbys[index].active = false;
+  s_gubby_count--;
+  if (s_gubby_count < 0) {
+    s_gubby_count = 0;
+  }
+  if (s_gubby_count == 0) {
+    s_pet_state = PetStateDead;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
+  }
+  sync_primary_pet_position();
+}
+
 static void release_grab(void) {
   GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+  int released_index = s_grabbed_gubby;
   if (!gubby) {
     s_pet_grabbed = false;
     s_grabbed_gubby = -1;
@@ -225,13 +248,23 @@ static void release_grab(void) {
   gubby->grabbed = false;
   gubby->fx = (float)gubby->x;
   gubby->fy = (float)gubby->y;
-  gubby->fvx = clamp_float((float)gubby->last_touch_dx * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
-  gubby->fvy = clamp_float((float)gubby->last_touch_dy * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
+  float fvx = (float)gubby->last_touch_dx * 0.55f;
+  float fvy = (float)gubby->last_touch_dy * 0.55f;
+  float speed = fvx * fvx + fvy * fvy;
+  s_pet_grabbed = false;
+  s_grabbed_gubby = -1;
+  if (speed > FLING_KILL_SPEED * FLING_KILL_SPEED) {
+    // Flung too hard - kill the gubby
+    s_flash_frames = 3;
+    kill_gubby(released_index);
+    play_gubby_sfx();
+    return;
+  }
+  gubby->fvx = clamp_float(fvx, -PET_MAX_SPEED, PET_MAX_SPEED);
+  gubby->fvy = clamp_float(fvy, -PET_MAX_SPEED, PET_MAX_SPEED);
   if (gubby->fvx > -0.3f && gubby->fvx < 0.3f) {
     gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f);
   }
-  s_pet_grabbed = false;
-  s_grabbed_gubby = -1;
   sync_primary_pet_position();
   play_gubby_sfx();
 }
@@ -247,8 +280,6 @@ static int spawn_gubby_at(int x, int y) {
       gubby->active = true;
       gubby->grab_offset_x = 16;
       gubby->grab_offset_y = 16;
-      gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f) * (1.0f + (rand() % 100) / 100.0f);
-      gubby->fvy = -1.0f - (rand() % 100) / 120.0f;
       set_gubby_position(gubby, x, y);
       gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f) * (1.0f + (rand() % 100) / 100.0f);
       gubby->fvy = -1.0f - (rand() % 100) / 120.0f;
@@ -283,6 +314,9 @@ typedef struct {
   int step_index;
   uint8_t packed_byte;
   uint8_t packed_shift;
+  uint8_t read_buf[AUDIO_READ_BUFFER];
+  uint32_t read_buf_pos;
+  uint32_t read_buf_len;
 } AudioDecoderState;
 
 static bool s_audio_active;
@@ -522,6 +556,56 @@ static void draw_center_light(GContext *ctx, int progress) {
   }
 }
 
+static void draw_egg_progress_bar(GContext *ctx) {
+  if (s_egg_hold_ms <= 0) {
+    return;
+  }
+  int progress = (s_egg_hold_ms * 1024) / EGG_HOLD_MS;
+  if (progress > 1024) {
+    progress = 1024;
+  }
+  int bar_w = 3;
+  int total_perimeter = 2 * (GABAGOOL_SCREEN_W + GABAGOOL_SCREEN_H - 2 * bar_w);
+  int fill_len = (total_perimeter * progress) / 1024;
+  
+  GColor bar_color = GColorYellow;
+  if (progress > 768) {
+    bar_color = GColorGreen;
+  } else if (progress > 512) {
+    bar_color = GColorChromeYellow;
+  }
+  graphics_context_set_fill_color(ctx, bar_color);
+  
+  int remaining = fill_len;
+  // Top edge: left to right
+  int seg = GABAGOOL_SCREEN_W;
+  if (remaining > 0) {
+    int len = remaining < seg ? remaining : seg;
+    graphics_fill_rect(ctx, GRect(0, 0, len, bar_w), 0, GCornerNone);
+    remaining -= len;
+  }
+  // Right edge: top to bottom
+  seg = GABAGOOL_SCREEN_H - bar_w;
+  if (remaining > 0) {
+    int len = remaining < seg ? remaining : seg;
+    graphics_fill_rect(ctx, GRect(GABAGOOL_SCREEN_W - bar_w, bar_w, bar_w, len), 0, GCornerNone);
+    remaining -= len;
+  }
+  // Bottom edge: right to left
+  seg = GABAGOOL_SCREEN_W - bar_w;
+  if (remaining > 0) {
+    int len = remaining < seg ? remaining : seg;
+    graphics_fill_rect(ctx, GRect(GABAGOOL_SCREEN_W - bar_w - len, GABAGOOL_SCREEN_H - bar_w, len, bar_w), 0, GCornerNone);
+    remaining -= len;
+  }
+  // Left edge: bottom to top
+  seg = GABAGOOL_SCREEN_H - 2 * bar_w;
+  if (remaining > 0) {
+    int len = remaining < seg ? remaining : seg;
+    graphics_fill_rect(ctx, GRect(0, GABAGOOL_SCREEN_H - bar_w - len, bar_w, len), 0, GCornerNone);
+  }
+}
+
 static void draw_pet(GContext *ctx) {
   if (s_flash_frames > 0) {
     s_flash_frames--;
@@ -533,22 +617,38 @@ static void draw_pet(GContext *ctx) {
   switch (s_pet_state) {
     case PetStateEgg:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG, GRect(36, 50, 128, 128));
+      draw_egg_progress_bar(ctx);
       break;
     case PetStateEggTap1:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP1, GRect(36, 50, 128, 128));
+      draw_egg_progress_bar(ctx);
       break;
     case PetStateEggTap2:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP2, GRect(36, 50, 128, 128));
+      draw_egg_progress_bar(ctx);
       break;
     case PetStateEggTap3:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP3, GRect(36, 50, 128, 128));
+      draw_egg_progress_bar(ctx);
       break;
     case PetStateHatching:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP3, GRect(36, 50, 128, 128));
-      if (s_hatch_progress < 60) {
+      if (s_hatch_progress < 40) {
         draw_center_light(ctx, s_hatch_progress);
       } else {
-        int y = (s_hatch_progress - 60) * 3;
+        // Gubby drops in from above, landing at center
+        int drop_t = s_hatch_progress - 40;
+        int target_y = GABAGOOL_SCREEN_H / 2 - 16;
+        int start_y = -32;
+        int y;
+        if (drop_t >= 30) {
+          y = target_y;
+        } else {
+          // Ease-out (decelerate) drop
+          int32_t t = (drop_t * 1000) / 30;
+          int32_t f = 1000 - ((1000 - t) * (1000 - t)) / 1000;
+          y = start_y + ((target_y - start_y) * f) / 1000;
+        }
         if (s_pet_frame_bitmap) {
           graphics_context_set_compositing_mode(ctx, GCompOpSet);
           graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(84, y, 32, 32));
@@ -701,16 +801,39 @@ static void trigger_breeding(void) {
 }
 
 static void update_pet_logic(void) {
+  // Egg hold timer
+  if (s_egg_touching && (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3)) {
+    s_egg_hold_ms += FRAME_MS;
+    if (s_egg_hold_ms >= EGG_HOLD_MS) {
+      s_egg_hold_ms = 0;
+      s_egg_touching = false;
+      if (s_pet_state == PetStateEgg) {
+        s_pet_state = PetStateEggTap1;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      } else if (s_pet_state == PetStateEggTap1) {
+        s_pet_state = PetStateEggTap2;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      } else if (s_pet_state == PetStateEggTap2) {
+        s_pet_state = PetStateEggTap3;
+        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      } else if (s_pet_state == PetStateEggTap3) {
+        s_pet_state = PetStateHatching;
+        s_hatch_progress = 0;
+      }
+      redraw_now();
+    }
+  }
+
   if (s_pet_state == PetStateHatching) {
     s_hatch_progress += 2;
-    if (s_hatch_progress == 60) {
+    if (s_hatch_progress == 40) {
       set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
     }
-    if (s_hatch_progress >= 100) {
+    if (s_hatch_progress >= 80) {
       s_pet_state = PetStateNormal;
       memset(s_gubbys, 0, sizeof(s_gubbys));
       s_gubby_count = 0;
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
       s_last_pet_time = time(NULL);
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
@@ -763,11 +886,33 @@ static void update_pet_logic(void) {
         gubby->fvy = -gubby->fvy * PET_FLOOR_BOUNCE;
         gubby->fvx *= PET_FLOOR_FRICTION;
 
-        if (gubby->fvy < 0 && gubby->fvy > -1.0f) {
+        // Settle when nearly stopped
+        if (gubby->fvy < 0 && gubby->fvy > -0.5f) {
           gubby->fvy = 0;
         }
-        if (gubby->fvx > -0.2f && gubby->fvx < 0.2f) {
-          gubby->fvx = (rand() % 2 == 0 ? 1.0f : -1.0f) * (1.2f + (rand() % 100) / 150.0f);
+        // Gentle wander instead of abrupt direction change
+        if (gubby->fvx > -0.15f && gubby->fvx < 0.15f) {
+          gubby->fvx = (rand() % 2 == 0 ? 0.6f : -0.6f) + (rand() % 100) / 200.0f;
+        }
+      }
+
+      // Inter-gubby collision (push apart)
+      for (int j = i + 1; j < MAX_GUBBYS; j++) {
+        GubbyPet *other = gubby_at(j);
+        if (!other || other->grabbed) {
+          continue;
+        }
+        float dx = other->fx - gubby->fx;
+        float dy = other->fy - gubby->fy;
+        float dist_sq = dx * dx + dy * dy;
+        if (dist_sq < 28.0f * 28.0f && dist_sq > 0.1f) {
+          float push = 0.4f;
+          float nx = dx > 0 ? push : -push;
+          float ny = dy > 0 ? push : -push;
+          gubby->fvx -= nx;
+          gubby->fvy -= ny;
+          other->fvx += nx;
+          other->fvy += ny;
         }
       }
 
@@ -878,6 +1023,11 @@ static void audio_decoder_start(AudioDecoderState *decoder, int track_index) {
 }
 
 static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
+  if (decoder->read_buf_pos < decoder->read_buf_len) {
+    *byte = decoder->read_buf[decoder->read_buf_pos++];
+    return true;
+  }
+
   const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[decoder->track_index];
   if (!decoder->active || decoder->chunk_index >= track->chunk_count) {
     return false;
@@ -893,11 +1043,18 @@ static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
     decoder->chunk_size = resource_size(decoder->handle);
   }
 
-  size_t read = resource_load_byte_range(decoder->handle, decoder->chunk_offset, byte, 1);
+  uint32_t to_read = decoder->chunk_size - decoder->chunk_offset;
+  if (to_read > AUDIO_READ_BUFFER) {
+    to_read = AUDIO_READ_BUFFER;
+  }
+  size_t read = resource_load_byte_range(decoder->handle, decoder->chunk_offset, decoder->read_buf, to_read);
   if (read == 0) {
     return false;
   }
-  decoder->chunk_offset++;
+  decoder->chunk_offset += read;
+  decoder->read_buf_pos = 1;
+  decoder->read_buf_len = (uint32_t)read;
+  *byte = decoder->read_buf[0];
   return true;
 }
 
@@ -1089,25 +1246,13 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
 
-  if (s_pet_state == PetStateEgg) {
-    s_egg_taps = 1;
-    s_pet_state = PetStateEggTap1;
-    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-  } else if (s_pet_state == PetStateEggTap1) {
-    s_egg_taps = 2;
-    s_pet_state = PetStateEggTap2;
-    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-  } else if (s_pet_state == PetStateEggTap2) {
-    s_egg_taps = 3;
-    s_pet_state = PetStateEggTap3;
-    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-  } else if (s_pet_state == PetStateEggTap3) {
-    s_egg_taps = 4;
-    s_pet_state = PetStateHatching;
-    s_hatch_progress = 0;
+  if (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3) {
+    // Start egg hold timer on button press
+    s_egg_touching = true;
+    s_egg_hold_ms = 0;
   } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
     }
     s_pet_state = PetStatePetted;
     s_pet_petted_frames = 0;
@@ -1133,7 +1278,7 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   reset_backlight();
   if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
     }
     s_grabbed_gubby = 0;
     GubbyPet *gubby = gubby_at(s_grabbed_gubby);
@@ -1259,7 +1404,7 @@ static void window_load(Window *window) {
       s_pet_state = PetStateDead;
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       if (s_gubby_count == 0) {
-        spawn_gubby_at(84, 114);
+        spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
       }
       set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
     }
@@ -1268,17 +1413,17 @@ static void window_load(Window *window) {
   // Load animation if active
   if (s_pet_state == PetStateNormal) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
     }
     set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
   } else if (s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
     }
     set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
   } else if (s_pet_state == PetStateDead) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, 114);
+      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
     }
     set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
   }
@@ -1334,29 +1479,10 @@ static void touch_handler(const TouchEvent *event, void *context) {
   int ty = event->y;
   
   if (event->type == TouchEvent_Touchdown) {
-    if (s_pet_state == PetStateEgg) {
+    if (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
-        s_egg_taps = 1;
-        s_pet_state = PetStateEggTap1;
-        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-      }
-    } else if (s_pet_state == PetStateEggTap1) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
-        s_egg_taps = 2;
-        s_pet_state = PetStateEggTap2;
-        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-      }
-    } else if (s_pet_state == PetStateEggTap2) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
-        s_egg_taps = 3;
-        s_pet_state = PetStateEggTap3;
-        persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-      }
-    } else if (s_pet_state == PetStateEggTap3) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
-        s_egg_taps = 4;
-        s_pet_state = PetStateHatching;
-        s_hatch_progress = 0;
+        s_egg_touching = true;
+        s_egg_hold_ms = 0;
       }
     } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
       int hit = hit_test_gubby(tx, ty);
@@ -1422,6 +1548,11 @@ static void touch_handler(const TouchEvent *event, void *context) {
       gubby->last_touch_y = ty;
     }
   } else if (event->type == TouchEvent_Liftoff) {
+    // Cancel egg hold on liftoff
+    if (s_egg_touching) {
+      s_egg_touching = false;
+      s_egg_hold_ms = 0;
+    }
     if (s_pet_grabbed) {
       release_grab();
     }

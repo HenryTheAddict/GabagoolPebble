@@ -338,6 +338,7 @@ static uint32_t s_pcm_offset;
 static AudioDecoderState s_music_decoder;
 static AudioDecoderState s_sfx_decoder;
 static int s_sfx_cooldown_ms = 0;
+static bool s_audio_shutdown;
 
 static const int16_t s_audio_step_table[] = {
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 20, 23,
@@ -947,6 +948,8 @@ static void update_pet_logic(void) {
       bool next_frame = gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
       if (!next_frame) {
         if (s_pet_state == PetStateDead) {
+          gbitmap_sequence_destroy(s_pet_seq);
+          s_pet_seq = NULL;
           s_pet_frame_elapsed_ms = 0;
           s_pet_frame_delay_ms = FRAME_MS;
           break;
@@ -997,11 +1000,27 @@ static void frame_timer_callback(void *context) {
 
 #if defined(PBL_SPEAKER)
 static void audio_schedule(int delay_ms);
+static void audio_schedule_restart(int delay_ms);
 
 static void audio_cancel_timer(void) {
   if (s_audio_timer) {
     app_timer_cancel(s_audio_timer);
     s_audio_timer = NULL;
+  }
+}
+
+static void audio_restart_callback(void *context) {
+  (void)context;
+  s_audio_timer = NULL;
+  if (!s_audio_shutdown && !s_audio_active) {
+    start_audio();
+  }
+}
+
+static void audio_schedule_restart(int delay_ms) {
+  if (!s_audio_shutdown) {
+    audio_cancel_timer();
+    s_audio_timer = app_timer_register(delay_ms, audio_restart_callback, NULL);
   }
 }
 
@@ -1205,6 +1224,7 @@ static void audio_pump_callback(void *context) {
       if (!fill_audio_buffer()) {
         s_audio_active = false;
         speaker_stream_close();
+        audio_schedule_restart(250);
         return;
       }
     }
@@ -1242,6 +1262,9 @@ static void speaker_finished_callback(SpeakerFinishReason reason, void *context)
   }
   if (reason == SpeakerFinishReasonPreempted || reason == SpeakerFinishReasonError) {
     s_audio_active = false;
+    s_pcm_count = 0;
+    s_pcm_offset = 0;
+    audio_schedule_restart(250);
   }
 }
 
@@ -1253,6 +1276,7 @@ static void start_audio(void) {
     return;
   }
   if (!speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 240)) {
+    audio_schedule_restart(500);
     return;
   }
   if (!s_music_decoder.active) {
@@ -1263,6 +1287,7 @@ static void start_audio(void) {
 }
 
 static void stop_audio(void) {
+  s_audio_shutdown = true;
   audio_cancel_timer();
   if (s_audio_active) {
     speaker_stream_close();
@@ -1270,6 +1295,9 @@ static void stop_audio(void) {
   }
   s_music_decoder.active = false;
   s_sfx_decoder.active = false;
+  s_pcm_count = 0;
+  s_pcm_offset = 0;
+  s_audio_shutdown = false;
 }
 #else
 static void start_audio(void) {

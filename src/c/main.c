@@ -7,8 +7,8 @@
 #define HOLD_MS 2000
 #define TRANSITION_MS 900
 #define BACKLIGHT_TIMEOUT_MS (5 * 60 * 1000)
-#define AUDIO_PCM_BUFFER 192
-#define AUDIO_STREAM_PASSES 2
+#define AUDIO_PCM_BUFFER 384
+#define AUDIO_STREAM_PASSES 3
 #define GABAGOOL_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define PET_GRAVITY 0.24f
 #define PET_WALL_BOUNCE 0.72f
@@ -20,7 +20,7 @@
 #define SFX_COOLDOWN_MS 250
 #define FLING_KILL_SPEED 9.0f
 #define DEAD_HOLD_MS 3000
-#define AUDIO_READ_BUFFER 32
+#define AUDIO_READ_BUFFER 256
 
 // Set to 0 to disable physical button controls (touch-only mode)
 #define DEBUG_BUTTONS 1
@@ -340,8 +340,11 @@ static AudioDecoderState s_sfx_decoder;
 static int s_sfx_cooldown_ms = 0;
 
 static const int16_t s_audio_step_table[] = {
-  2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 26, 31, 36,
-  42, 49, 57, 66, 77, 89, 103, 119, 127,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 20, 23,
+  27, 31, 36, 42, 49, 57, 66, 77, 89, 103, 119, 127,
+};
+static const int8_t s_audio_index_table[] = {
+  -1, -1, -1, -1, 2, 4, 6, 8,
 };
 static int s_audio_track_index;
 #endif
@@ -1014,17 +1017,24 @@ static int16_t clamp_audio(int16_t value) {
 
 static int decode_audio_code(AudioDecoderState *decoder, uint8_t code) {
   int16_t step = s_audio_step_table[decoder->step_index];
-  int16_t diff = step / 2;
-  if (code & 1) {
+  uint8_t magnitude = code & 0x7;
+  int16_t diff = step >> 3;
+  if (magnitude & 1) {
+    diff += step >> 2;
+  }
+  if (magnitude & 2) {
+    diff += step >> 1;
+  }
+  if (magnitude & 4) {
     diff += step;
   }
-  if (code & 2) {
+  if (code & 8) {
     decoder->predictor -= diff;
   } else {
     decoder->predictor += diff;
   }
   decoder->predictor = clamp_audio(decoder->predictor);
-  decoder->step_index += (code & 1) ? 2 : -1;
+  decoder->step_index += s_audio_index_table[magnitude];
   if (decoder->step_index < 0) {
     decoder->step_index = 0;
   } else if (decoder->step_index >= (int)ARRAY_LENGTH(s_audio_step_table)) {
@@ -1044,7 +1054,7 @@ static void audio_decoder_start(AudioDecoderState *decoder, int track_index) {
   decoder->track_index = track_index;
   decoder->samples_remaining = track->total_samples;
   decoder->predictor = 0;
-  decoder->step_index = 10;
+  decoder->step_index = 8;
   decoder->packed_shift = 8;
   decoder->handle = resource_get_handle(track->chunk_resource_ids[0]);
   decoder->chunk_size = resource_size(decoder->handle);
@@ -1107,8 +1117,8 @@ static bool audio_decoder_next_output_sample(AudioDecoderState *decoder, int8_t 
     decoder->packed_shift = 0;
   }
 
-  uint8_t code = (decoder->packed_byte >> decoder->packed_shift) & 0x3;
-  decoder->packed_shift += 2;
+  uint8_t code = (decoder->packed_byte >> decoder->packed_shift) & ((1u << GABAGOOL_AUDIO_CODEC_BITS) - 1u);
+  decoder->packed_shift += GABAGOOL_AUDIO_CODEC_BITS;
   decoder->current_sample = (int8_t)decode_audio_code(decoder, code);
   decoder->resample_error += GABAGOOL_AUDIO_RATE;
   uint32_t repeats = decoder->resample_error / GABAGOOL_AUDIO_SOURCE_RATE;
@@ -1171,10 +1181,10 @@ static bool fill_audio_buffer(void) {
       }
     }
 
-    int16_t mixed = (music_sample * 3) / 4;
+    int16_t mixed = music_sample;
     int8_t sfx_sample = 0;
     if (audio_decoder_next_output_sample(&s_sfx_decoder, &sfx_sample)) {
-      mixed += (sfx_sample * 3) / 4;
+      mixed = ((int16_t)music_sample * 3) / 4 + ((int16_t)sfx_sample * 3) / 4;
     }
     s_pcm_buffer[s_pcm_count++] = (int8_t)clamp_audio(mixed);
   }
@@ -1242,7 +1252,7 @@ static void start_audio(void) {
   if (speaker_is_muted()) {
     return;
   }
-  if (!speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 80)) {
+  if (!speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 240)) {
     return;
   }
   if (!s_music_decoder.active) {

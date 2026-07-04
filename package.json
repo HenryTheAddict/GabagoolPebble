@@ -87,17 +87,47 @@
         {
           "type": "raw",
           "name": "AUDIO_00_00",
-          "file": "generated/audio_00_00.ad2"
+          "file": "generated/audio_00_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_00_01",
+          "file": "generated/audio_00_01.ad4"
         },
         {
           "type": "raw",
           "name": "AUDIO_01_00",
-          "file": "generated/audio_01_00.ad2"
+          "file": "generated/audio_01_00.ad4"
         },
         {
           "type": "raw",
           "name": "AUDIO_02_00",
-          "file": "generated/audio_02_00.ad2"
+          "file": "generated/audio_02_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_01",
+          "file": "generated/audio_02_01.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_02",
+          "file": "generated/audio_02_02.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_03",
+          "file": "generated/audio_02_03.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_04",
+          "file": "generated/audio_02_04.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_05",
+          "file": "generated/audio_02_05.ad4"
         },
         {
           "type": "bitmap",

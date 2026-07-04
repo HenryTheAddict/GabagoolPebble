@@ -21,10 +21,11 @@ SCREEN_W = 200
 SCREEN_H = 228
 PAN_W = 320
 AUDIO_RATE = 8000
-AUDIO_SOURCE_RATE = 1500
+AUDIO_SOURCE_RATE = 8000
 AUDIO_MAX_UPSAMPLE = math.ceil(AUDIO_RATE / AUDIO_SOURCE_RATE)
+AUDIO_CODEC_BITS = 4
 AUDIO_CHUNK_BYTES = 60 * 1024
-AUDIO_CACHE_VERSION = 1
+AUDIO_CACHE_VERSION = 2
 SFX_AUDIO_FILES = {"gubbysfx.ogg"}
 
 PHOTO_FILES = [
@@ -44,6 +45,11 @@ STEP_TABLE_2BIT = [
     2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 26, 31, 36,
     42, 49, 57, 66, 77, 89, 103, 119, 127,
 ]
+STEP_TABLE_4BIT = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 20, 23,
+    27, 31, 36, 42, 49, 57, 66, 77, 89, 103, 119, 127,
+]
+INDEX_TABLE_4BIT = [-1, -1, -1, -1, 2, 4, 6, 8]
 
 
 def nearest_palette_color(pixel):
@@ -295,6 +301,43 @@ def decode_ogg_to_pcm(source_file):
     return pcm
 
 
+def encode_4bit_adpcm(pcm):
+    predictor = 0
+    step_index = 8
+    packed = bytearray()
+    out_byte = 0
+    shift = 0
+
+    for sample in pcm:
+        best_code = 0
+        best_error = 1 << 30
+        best_predictor = predictor
+        best_index = step_index
+
+        for code in range(16):
+            trial_pred, trial_index = decode_code_4bit(predictor, step_index, code)
+            error = abs(sample - trial_pred)
+            if error < best_error:
+                best_error = error
+                best_code = code
+                best_predictor = trial_pred
+                best_index = trial_index
+
+        out_byte |= best_code << shift
+        predictor = best_predictor
+        step_index = best_index
+        shift += AUDIO_CODEC_BITS
+        if shift == 8:
+            packed.append(out_byte)
+            out_byte = 0
+            shift = 0
+
+    if shift:
+        packed.append(out_byte)
+
+    return packed
+
+
 def encode_2bit_adpcm(pcm):
     predictor = 0
     step_index = 10
@@ -332,6 +375,26 @@ def encode_2bit_adpcm(pcm):
     return packed
 
 
+def decode_code_4bit(predictor, step_index, code):
+    step = STEP_TABLE_4BIT[step_index]
+    magnitude = code & 0x7
+    diff = step >> 3
+    if magnitude & 1:
+        diff += step >> 2
+    if magnitude & 2:
+        diff += step >> 1
+    if magnitude & 4:
+        diff += step
+    if code & 8:
+        predictor -= diff
+    else:
+        predictor += diff
+    predictor = max(-128, min(127, predictor))
+    step_index += INDEX_TABLE_4BIT[magnitude]
+    step_index = max(0, min(len(STEP_TABLE_4BIT) - 1, step_index))
+    return predictor, step_index
+
+
 def decode_code_2bit(predictor, step_index, code):
     step = STEP_TABLE_2BIT[step_index]
     diff = step // 2
@@ -362,7 +425,8 @@ def audio_cache_settings():
         "rate": AUDIO_RATE,
         "max_upsample": AUDIO_MAX_UPSAMPLE,
         "chunk_bytes": AUDIO_CHUNK_BYTES,
-        "encoder": "2bit-adpcm-v1",
+        "codec_bits": AUDIO_CODEC_BITS,
+        "encoder": "4bit-adpcm-v1",
     }
 
 
@@ -418,7 +482,7 @@ def prune_stale_audio_chunks(cache_manifest):
         for track in cache_manifest["tracks"].values()
         for chunk_file in track.get("chunk_files", [])
     }
-    for path in GENERATED.glob("audio_*.ad2"):
+    for path in list(GENERATED.glob("audio_*.ad2")) + list(GENERATED.glob("audio_*.ad4")):
         if path.name not in keep:
             path.unlink()
 
@@ -461,7 +525,7 @@ def convert_audio():
             scale = 127.0 / max_val
             pcm = [max(-128, min(127, int(round(s * scale)))) for s in pcm]
             
-        encoded = encode_2bit_adpcm(pcm)
+        encoded = encode_4bit_adpcm(pcm)
 
         chunk_count = math.ceil(len(encoded) / AUDIO_CHUNK_BYTES)
         track_chunk_names = []
@@ -470,14 +534,14 @@ def convert_audio():
         for chunk_idx in range(chunk_count):
             chunk = encoded[chunk_idx * AUDIO_CHUNK_BYTES:(chunk_idx + 1) * AUDIO_CHUNK_BYTES]
             name = f"AUDIO_{track_idx:02d}_{chunk_idx:02d}"
-            chunk_file = f"audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
-            out_path = GENERATED / f"audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
+            chunk_file = f"audio_{track_idx:02d}_{chunk_idx:02d}.ad4"
+            out_path = GENERATED / chunk_file
             out_path.write_bytes(chunk)
             
             entries.append({
                 "type": "raw",
                 "name": name,
-                "file": f"generated/audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
+                "file": f"generated/{chunk_file}"
             })
             track_chunk_names.append(name)
             track_chunk_files.append(chunk_file)
@@ -551,6 +615,7 @@ static const uint32_t GABAGOOL_TRACK_{idx}_RESOURCE_IDS[GABAGOOL_TRACK_{idx}_CHU
 #define GABAGOOL_AUDIO_RATE {AUDIO_RATE}
 #define GABAGOOL_AUDIO_SOURCE_RATE {AUDIO_SOURCE_RATE}
 #define GABAGOOL_AUDIO_MAX_UPSAMPLE {AUDIO_MAX_UPSAMPLE}
+#define GABAGOOL_AUDIO_CODEC_BITS {AUDIO_CODEC_BITS}
 #define GABAGOOL_IMAGE_COUNT {len(image_entries)}
 #define GABAGOOL_AUDIO_TRACK_COUNT {len(tracks_info)}
 #define GABAGOOL_MUSIC_TRACK_COUNT {len(music_track_indexes)}

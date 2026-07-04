@@ -6,6 +6,11 @@
     "pebble-app",
     "gabagool"
   ],
+  "scripts": {
+    "fix:gubby": "python tools/fix_gubby_audio_metadata.py",
+    "audio:metadata": "python tools/fix_gubby_audio_metadata.py",
+    "assets": "python tools/convert_assets.py"
+  },
   "private": true,
   "dependencies": {},
   "pebble": {
@@ -91,13 +96,8 @@
         },
         {
           "type": "raw",
-          "name": "AUDIO_01_01",
-          "file": "generated/audio_01_01.ad2"
-        },
-        {
-          "type": "raw",
-          "name": "AUDIO_01_02",
-          "file": "generated/audio_01_02.ad2"
+          "name": "AUDIO_02_00",
+          "file": "generated/audio_02_00.ad2"
         },
         {
           "type": "bitmap",

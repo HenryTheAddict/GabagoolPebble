@@ -2,14 +2,21 @@
 #include <string.h>
 #include "generated_assets.h"
 
-#define FRAME_MS 50
+#define FRAME_MS 33
 #define SLIDE_MS 7000
 #define HOLD_MS 2000
 #define TRANSITION_MS 900
 #define BACKLIGHT_TIMEOUT_MS (5 * 60 * 1000)
-#define AUDIO_ENCODED_BUFFER 128
+#define AUDIO_ENCODED_BUFFER 16
 #define AUDIO_PCM_BUFFER (AUDIO_ENCODED_BUFFER * 4 * GABAGOOL_AUDIO_UPSAMPLE)
+#define AUDIO_STREAM_PASSES 8
 #define GABAGOOL_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define PET_GRAVITY 0.38f
+#define PET_WALL_BOUNCE 0.85f
+#define PET_CEILING_BOUNCE 0.72f
+#define PET_FLOOR_BOUNCE 0.60f
+#define PET_FLOOR_FRICTION 0.94f
+#define PET_MAX_SPEED 8.0f
 
 #define PERSIST_KEY_PET_STATE 100
 #define PERSIST_KEY_LAST_PET_TIME 101
@@ -37,6 +44,7 @@ typedef enum {
 static void start_audio(void);
 static void stop_audio(void);
 static void play_random_track(void);
+static void play_gubby_sfx(void);
 static void set_pet_animation(uint32_t resource_id);
 static GBitmap *load_image(int index);
 
@@ -59,8 +67,6 @@ static PetState s_pet_state = PetStateEgg;
 static int s_egg_taps = 0;
 static int s_pet_x = 84;
 static int s_pet_y = 98;
-static int s_pet_dx = 3;
-static int s_pet_dy = 2;
 
 static GBitmapSequence *s_pet_seq = NULL;
 static GBitmap *s_pet_frame_bitmap = NULL;
@@ -69,11 +75,72 @@ static uint32_t s_pet_frame_elapsed_ms = 0;
 
 static uint32_t s_last_pet_time = 0;
 static bool s_pet_grabbed = false;
+static int s_pet_grab_offset_x = 16;
+static int s_pet_grab_offset_y = 16;
+static int s_last_touch_x = 0;
+static int s_last_touch_y = 0;
+static int s_last_touch_dx = 0;
+static int s_last_touch_dy = 0;
 static int s_rub_count = 0;
 static int s_last_rub_dir = 0;
 static int s_hatch_progress = 0;
 static int s_flash_frames = 0;
 static int s_pet_petted_frames = 0;
+
+static float s_pet_fx = 84.0f;
+static float s_pet_fy = 98.0f;
+static float s_pet_fvx = 3.0f;
+static float s_pet_fvy = 2.0f;
+
+static int clamp_int(int value, int min_value, int max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+  if (value > max_value) {
+    return max_value;
+  }
+  return value;
+}
+
+static float clamp_float(float value, float min_value, float max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+  if (value > max_value) {
+    return max_value;
+  }
+  return value;
+}
+
+static void redraw_now(void) {
+  if (s_canvas) {
+    layer_mark_dirty(s_canvas);
+  }
+}
+
+static void set_pet_position(int x, int y) {
+  s_pet_x = clamp_int(x, 0, GABAGOOL_SCREEN_W - 32);
+  s_pet_y = clamp_int(y, 0, GABAGOOL_SCREEN_H - 32);
+  s_pet_fx = (float)s_pet_x;
+  s_pet_fy = (float)s_pet_y;
+  redraw_now();
+}
+
+static void drag_pet_to(int tx, int ty) {
+  set_pet_position(tx - s_pet_grab_offset_x, ty - s_pet_grab_offset_y);
+}
+
+static void release_grab(void) {
+  s_pet_grabbed = false;
+  s_pet_fx = (float)s_pet_x;
+  s_pet_fy = (float)s_pet_y;
+  s_pet_fvx = clamp_float((float)s_last_touch_dx * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
+  s_pet_fvy = clamp_float((float)s_last_touch_dy * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
+  if (s_pet_fvx > -0.3f && s_pet_fvx < 0.3f) {
+    s_pet_fvx = (rand() % 2 == 0 ? 1.2f : -1.2f);
+  }
+  play_gubby_sfx();
+}
 
 static GBitmap *s_static_pet_bitmap = NULL;
 static uint32_t s_static_pet_resource_id = 0;
@@ -83,6 +150,7 @@ static bool s_audio_active;
 static ResHandle s_audio_handle;
 static uint32_t s_audio_chunk_index;
 static uint32_t s_audio_chunk_offset;
+static uint32_t s_audio_chunk_size;
 static uint32_t s_audio_samples_remaining;
 static int16_t s_audio_predictor;
 static int s_audio_step_index;
@@ -428,8 +496,10 @@ static void update_pet_logic(void) {
       s_pet_state = PetStateNormal;
       s_pet_x = 84;
       s_pet_y = 114;
-      s_pet_dx = 3;
-      s_pet_dy = 2;
+      s_pet_fx = 84.0f;
+      s_pet_fy = 114.0f;
+      s_pet_fvx = 1.5f;
+      s_pet_fvy = 0.0f;
       s_last_pet_time = time(NULL);
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
@@ -456,18 +526,38 @@ static void update_pet_logic(void) {
     }
 
     if (!s_pet_grabbed) {
-      s_pet_x += s_pet_dx;
-      s_pet_y += s_pet_dy;
-      if (s_pet_x <= 0) {
-        s_pet_x = 0; s_pet_dx = -s_pet_dx;
-      } else if (s_pet_x >= GABAGOOL_SCREEN_W - 32) {
-        s_pet_x = GABAGOOL_SCREEN_W - 32; s_pet_dx = -s_pet_dx;
+      s_pet_fvy += PET_GRAVITY;
+      s_pet_fvx = clamp_float(s_pet_fvx, -PET_MAX_SPEED, PET_MAX_SPEED);
+      s_pet_fvy = clamp_float(s_pet_fvy, -PET_MAX_SPEED, PET_MAX_SPEED);
+      s_pet_fx += s_pet_fvx;
+      s_pet_fy += s_pet_fvy;
+
+      if (s_pet_fx <= 0) {
+        s_pet_fx = 0;
+        s_pet_fvx = -s_pet_fvx * PET_WALL_BOUNCE;
+      } else if (s_pet_fx >= GABAGOOL_SCREEN_W - 32) {
+        s_pet_fx = GABAGOOL_SCREEN_W - 32;
+        s_pet_fvx = -s_pet_fvx * PET_WALL_BOUNCE;
       }
-      if (s_pet_y <= 0) {
-        s_pet_y = 0; s_pet_dy = -s_pet_dy;
-      } else if (s_pet_y >= GABAGOOL_SCREEN_H - 32) {
-        s_pet_y = GABAGOOL_SCREEN_H - 32; s_pet_dy = -s_pet_dy;
+
+      if (s_pet_fy <= 0) {
+        s_pet_fy = 0;
+        s_pet_fvy = -s_pet_fvy * PET_CEILING_BOUNCE;
+      } else if (s_pet_fy >= GABAGOOL_SCREEN_H - 32) {
+        s_pet_fy = GABAGOOL_SCREEN_H - 32;
+        s_pet_fvy = -s_pet_fvy * PET_FLOOR_BOUNCE;
+        s_pet_fvx *= PET_FLOOR_FRICTION;
+        
+        if (s_pet_fvy < 0 && s_pet_fvy > -1.0f) {
+          s_pet_fvy = 0;
+        }
+        if (s_pet_fvx > -0.2f && s_pet_fvx < 0.2f) {
+          s_pet_fvx = (rand() % 2 == 0 ? 1.0f : -1.0f) * (1.2f + (rand() % 100) / 150.0f);
+        }
       }
+
+      s_pet_x = (int)s_pet_fx;
+      s_pet_y = (int)s_pet_fy;
     }
   }
 
@@ -507,6 +597,13 @@ static void frame_timer_callback(void *context) {
 #if defined(PBL_SPEAKER)
 static void audio_schedule(int delay_ms);
 
+static void audio_cancel_timer(void) {
+  if (s_audio_timer) {
+    app_timer_cancel(s_audio_timer);
+    s_audio_timer = NULL;
+  }
+}
+
 static void audio_reset_decoder(void) {
   const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[s_audio_track_index];
   s_audio_chunk_index = 0;
@@ -515,6 +612,7 @@ static void audio_reset_decoder(void) {
   s_audio_predictor = 0;
   s_audio_step_index = 10;
   s_audio_handle = resource_get_handle(track->chunk_resource_ids[0]);
+  s_audio_chunk_size = resource_size(s_audio_handle);
   s_pcm_count = 0;
   s_pcm_offset = 0;
 }
@@ -556,18 +654,17 @@ static bool decode_next_audio_block(void) {
     return false;
   }
 
-  size_t chunk_size = resource_size(s_audio_handle);
-  if (s_audio_chunk_offset >= chunk_size) {
+  if (s_audio_chunk_offset >= s_audio_chunk_size) {
     s_audio_chunk_index++;
     s_audio_chunk_offset = 0;
     if (s_audio_chunk_index >= track->chunk_count) {
       return false;
     }
     s_audio_handle = resource_get_handle(track->chunk_resource_ids[s_audio_chunk_index]);
-    chunk_size = resource_size(s_audio_handle);
+    s_audio_chunk_size = resource_size(s_audio_handle);
   }
 
-  size_t to_read = GABAGOOL_MIN((size_t)AUDIO_ENCODED_BUFFER, chunk_size - s_audio_chunk_offset);
+  size_t to_read = GABAGOOL_MIN((size_t)AUDIO_ENCODED_BUFFER, s_audio_chunk_size - s_audio_chunk_offset);
   size_t read = resource_load_byte_range(s_audio_handle, s_audio_chunk_offset, s_encoded_buffer, to_read);
   if (read == 0) {
     return false;
@@ -591,16 +688,35 @@ static bool decode_next_audio_block(void) {
 }
 
 static void play_random_track(void) {
-  if (GABAGOOL_AUDIO_TRACK_COUNT > 1) {
+  if (GABAGOOL_MUSIC_TRACK_COUNT > 1) {
     int next_track = s_audio_track_index;
     while (next_track == s_audio_track_index) {
-      next_track = rand() % GABAGOOL_AUDIO_TRACK_COUNT;
+      next_track = GABAGOOL_MUSIC_TRACK_INDEXES[rand() % GABAGOOL_MUSIC_TRACK_COUNT];
     }
     s_audio_track_index = next_track;
+  } else if (GABAGOOL_MUSIC_TRACK_COUNT == 1) {
+    s_audio_track_index = GABAGOOL_MUSIC_TRACK_INDEXES[0];
   } else {
     s_audio_track_index = 0;
   }
   start_audio();
+}
+
+static void play_track(int track_index) {
+  if (track_index < 0 || track_index >= GABAGOOL_AUDIO_TRACK_COUNT) {
+    return;
+  }
+  if (s_audio_active) {
+    stop_audio();
+  }
+  s_audio_track_index = track_index;
+  start_audio();
+}
+
+static void play_gubby_sfx(void) {
+#if GABAGOOL_GUBBY_SFX_TRACK_INDEX >= 0
+  play_track(GABAGOOL_GUBBY_SFX_TRACK_INDEX);
+#endif
 }
 
 static void audio_pump_callback(void *context) {
@@ -610,7 +726,7 @@ static void audio_pump_callback(void *context) {
     return;
   }
 
-  for (int loops = 0; loops < 8; loops++) {
+  for (int loops = 0; loops < AUDIO_STREAM_PASSES; loops++) {
     if (s_pcm_offset >= s_pcm_count) {
       if (!decode_next_audio_block()) {
         speaker_stream_close();
@@ -634,6 +750,7 @@ static void audio_pump_callback(void *context) {
 
 static void audio_schedule(int delay_ms) {
   if (s_audio_active) {
+    audio_cancel_timer();
     s_audio_timer = app_timer_register(delay_ms, audio_pump_callback, NULL);
   }
 }
@@ -664,6 +781,7 @@ static void start_audio(void) {
 }
 
 static void stop_audio(void) {
+  audio_cancel_timer();
   if (s_audio_active) {
     speaker_stream_close();
     s_audio_active = false;
@@ -674,6 +792,9 @@ static void start_audio(void) {
 }
 
 static void stop_audio(void) {
+}
+
+static void play_gubby_sfx(void) {
 }
 #endif
 
@@ -724,11 +845,13 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     s_last_pet_time = time(NULL);
     persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
     set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+    play_gubby_sfx();
   } else if (s_pet_state == PetStateDead) {
     s_pet_state = PetStateEgg;
     s_egg_taps = 0;
     persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
   }
+  redraw_now();
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -737,17 +860,26 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   reset_backlight();
   if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     s_pet_grabbed = true;
-    s_pet_x = GABAGOOL_SCREEN_W - 32;
+    s_pet_fx = (float)s_pet_x;
+    s_pet_fy = (float)s_pet_y;
+    s_pet_fvx = 0.0f;
+    s_pet_fvy = 0.0f;
+    s_last_touch_dx = 0;
+    s_last_touch_dy = 0;
     s_rub_count = 0;
     s_last_rub_dir = 0;
   }
+  redraw_now();
 }
 
 static void select_long_click_release_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   reset_backlight();
-  s_pet_grabbed = false;
+  if (s_pet_grabbed) {
+    release_grab();
+  }
+  redraw_now();
 }
 
 static void select_double_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -767,8 +899,9 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
   if (s_pet_grabbed) {
-    s_pet_y -= 15;
-    if (s_pet_y < 0) s_pet_y = 0;
+    set_pet_position(s_pet_x, s_pet_y - 15);
+    s_last_touch_dx = 0;
+    s_last_touch_dy = -15;
     if (s_last_rub_dir != -1) {
       s_rub_count++;
       s_last_rub_dir = -1;
@@ -779,6 +912,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   } else {
     begin_transition(-1);
   }
+  redraw_now();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -786,8 +920,9 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
   if (s_pet_grabbed) {
-    s_pet_y += 15;
-    if (s_pet_y > GABAGOOL_SCREEN_H - 32) s_pet_y = GABAGOOL_SCREEN_H - 32;
+    set_pet_position(s_pet_x, s_pet_y + 15);
+    s_last_touch_dx = 0;
+    s_last_touch_dy = 15;
     if (s_last_rub_dir != 1) {
       s_rub_count++;
       s_last_rub_dir = 1;
@@ -798,6 +933,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   } else {
     begin_transition(1);
   }
+  redraw_now();
 }
 
 static void click_config_provider(void *context) {
@@ -927,14 +1063,22 @@ static void touch_handler(const TouchEvent *event, void *context) {
         s_pet_grabbed = true;
         s_rub_count = 0;
         s_last_rub_dir = 0;
-        s_pet_x = tx - 16;
-        s_pet_y = ty - 16;
+        s_pet_grab_offset_x = clamp_int(tx - s_pet_x, 0, 31);
+        s_pet_grab_offset_y = clamp_int(ty - s_pet_y, 0, 31);
+        s_last_touch_x = tx;
+        s_last_touch_y = ty;
+        s_last_touch_dx = 0;
+        s_last_touch_dy = 0;
+        s_pet_fvx = 0.0f;
+        s_pet_fvy = 0.0f;
+        drag_pet_to(tx, ty);
         
         s_pet_state = PetStatePetted;
         s_pet_petted_frames = 0;
         s_last_pet_time = time(NULL);
         persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
         set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+        play_gubby_sfx();
       }
     } else if (s_pet_state == PetStateDead) {
       if (tx >= s_pet_x && tx <= s_pet_x + 32 && ty >= s_pet_y && ty <= s_pet_y + 32) {
@@ -945,12 +1089,10 @@ static void touch_handler(const TouchEvent *event, void *context) {
     }
   } else if (event->type == TouchEvent_PositionUpdate) {
     if (s_pet_grabbed) {
-      s_pet_x = GABAGOOL_SCREEN_W - 32;
-      s_pet_y = ty - 16;
-      if (s_pet_y < 0) s_pet_y = 0;
-      if (s_pet_y > GABAGOOL_SCREEN_H - 32) s_pet_y = GABAGOOL_SCREEN_H - 32;
+      s_last_touch_dx = tx - s_last_touch_x;
+      s_last_touch_dy = ty - s_last_touch_y;
+      drag_pet_to(tx, ty);
       
-      static int s_last_touch_y = 0;
       int new_dir = 0;
       if (ty < s_last_touch_y - 8) {
         new_dir = -1;
@@ -965,13 +1107,15 @@ static void touch_handler(const TouchEvent *event, void *context) {
           trigger_breeding();
         }
       }
+      s_last_touch_x = tx;
       s_last_touch_y = ty;
     }
   } else if (event->type == TouchEvent_Liftoff) {
     if (s_pet_grabbed) {
-      s_pet_grabbed = false;
+      release_grab();
     }
   }
+  redraw_now();
 }
 
 static void init(void) {

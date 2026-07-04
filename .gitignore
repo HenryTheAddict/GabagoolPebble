@@ -2,3 +2,5 @@ build/
 .lock-waf_linux_build
 pebble_screenshot_*.png
 welcome.png
+__pycache__/
+resources/generated/audio_cache.json

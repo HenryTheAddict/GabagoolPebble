@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import math
 import shutil
@@ -14,14 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 GENERATED = ROOT / "resources" / "generated"
 HEADER = ROOT / "src" / "c" / "generated_assets.h"
 PACKAGE = ROOT / "package.json"
+AUDIO_CACHE = GENERATED / "audio_cache.json"
 
 SCREEN_W = 200
 SCREEN_H = 228
 PAN_W = 220
 AUDIO_RATE = 8000
-AUDIO_SOURCE_RATE = 8000
+AUDIO_SOURCE_RATE = 1000
 AUDIO_UPSAMPLE = AUDIO_RATE // AUDIO_SOURCE_RATE
 AUDIO_CHUNK_BYTES = 60 * 1024
+AUDIO_CACHE_VERSION = 1
+SFX_AUDIO_FILES = {"gubbysfx.ogg"}
 
 PHOTO_FILES = [
     "welcome.png",
@@ -343,15 +347,112 @@ def decode_code_2bit(predictor, step_index, code):
     return predictor, step_index
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def audio_cache_settings():
+    return {
+        "version": AUDIO_CACHE_VERSION,
+        "source_rate": AUDIO_SOURCE_RATE,
+        "rate": AUDIO_RATE,
+        "upsample": AUDIO_UPSAMPLE,
+        "chunk_bytes": AUDIO_CHUNK_BYTES,
+        "encoder": "2bit-adpcm-v1",
+    }
+
+
+def load_audio_cache():
+    if not AUDIO_CACHE.exists():
+        return {"settings": audio_cache_settings(), "tracks": {}}
+    try:
+        return json.loads(AUDIO_CACHE.read_text())
+    except json.JSONDecodeError:
+        return {"settings": audio_cache_settings(), "tracks": {}}
+
+
+def audio_cache_key(track_idx, filename):
+    return f"{track_idx:02d}:{filename}"
+
+
+def audio_role(filename):
+    return "sfx" if filename.lower() in SFX_AUDIO_FILES else "music"
+
+
+def audio_cache_entry_valid(cache, entry, source_hash):
+    if cache.get("settings") != audio_cache_settings():
+        return False
+    if not entry or entry.get("sha256") != source_hash:
+        return False
+    if len(entry.get("chunk_files", [])) != entry.get("chunk_count"):
+        return False
+    if len(entry.get("chunk_sizes", [])) != entry.get("chunk_count"):
+        return False
+    if len(entry.get("chunk_names", [])) != entry.get("chunk_count"):
+        return False
+    for chunk_file, chunk_size in zip(entry.get("chunk_files", []), entry.get("chunk_sizes", [])):
+        path = GENERATED / chunk_file
+        if not path.exists() or path.stat().st_size != chunk_size:
+            return False
+    return True
+
+
+def audio_entries_from_track(track):
+    return [
+        {
+            "type": "raw",
+            "name": name,
+            "file": f"generated/{chunk_file}"
+        }
+        for name, chunk_file in zip(track["chunk_names"], track["chunk_files"])
+    ]
+
+
+def prune_stale_audio_chunks(cache_manifest):
+    keep = {
+        chunk_file
+        for track in cache_manifest["tracks"].values()
+        for chunk_file in track.get("chunk_files", [])
+    }
+    for path in GENERATED.glob("audio_*.ad2"):
+        if path.name not in keep:
+            path.unlink()
+
+
 def convert_audio():
-    ogg_files = sorted(list(ROOT.glob("*.ogg")))
+    ogg_files = sorted(path for path in ROOT.glob("*.ogg") if not path.name.startswith("."))
     if not ogg_files:
         raise FileNotFoundError("No .ogg files found in the root directory")
 
     entries = []
     tracks_info = []
+    cache = load_audio_cache()
+    next_cache = {"settings": audio_cache_settings(), "tracks": {}}
+    cache_hits = 0
 
     for track_idx, ogg_file in enumerate(ogg_files):
+        source_hash = file_sha256(ogg_file)
+        key = audio_cache_key(track_idx, ogg_file.name)
+        cached_track = cache.get("tracks", {}).get(key)
+        if audio_cache_entry_valid(cache, cached_track, source_hash):
+            role = audio_role(ogg_file.name)
+            entries.extend(audio_entries_from_track(cached_track))
+            tracks_info.append({
+                "filename": cached_track["filename"],
+                "total_samples": cached_track["total_samples"],
+                "encoded_bytes": cached_track["encoded_bytes"],
+                "chunk_count": cached_track["chunk_count"],
+                "chunk_names": cached_track["chunk_names"],
+                "role": role
+            })
+            next_cache["tracks"][key] = {**cached_track, "role": role}
+            cache_hits += 1
+            continue
+
         pcm = decode_ogg_to_pcm(ogg_file)
         
         # Normalize PCM to use full 8-bit dynamic range
@@ -364,9 +465,12 @@ def convert_audio():
 
         chunk_count = math.ceil(len(encoded) / AUDIO_CHUNK_BYTES)
         track_chunk_names = []
+        track_chunk_files = []
+        track_chunk_sizes = []
         for chunk_idx in range(chunk_count):
             chunk = encoded[chunk_idx * AUDIO_CHUNK_BYTES:(chunk_idx + 1) * AUDIO_CHUNK_BYTES]
             name = f"AUDIO_{track_idx:02d}_{chunk_idx:02d}"
+            chunk_file = f"audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
             out_path = GENERATED / f"audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
             out_path.write_bytes(chunk)
             
@@ -376,14 +480,29 @@ def convert_audio():
                 "file": f"generated/audio_{track_idx:02d}_{chunk_idx:02d}.ad2"
             })
             track_chunk_names.append(name)
+            track_chunk_files.append(chunk_file)
+            track_chunk_sizes.append(len(chunk))
             
-        tracks_info.append({
+        track_info = {
             "filename": ogg_file.name,
             "total_samples": len(pcm),
             "encoded_bytes": len(encoded),
             "chunk_count": chunk_count,
-            "chunk_names": track_chunk_names
-        })
+            "chunk_names": track_chunk_names,
+            "role": audio_role(ogg_file.name)
+        }
+        tracks_info.append(track_info)
+        next_cache["tracks"][key] = {
+            **track_info,
+            "sha256": source_hash,
+            "chunk_files": track_chunk_files,
+            "chunk_sizes": track_chunk_sizes
+        }
+
+    prune_stale_audio_chunks(next_cache)
+    AUDIO_CACHE.write_text(json.dumps(next_cache, indent=2) + "\n")
+    if cache_hits:
+        print(f"Audio cache: reused {cache_hits} of {len(ogg_files)} tracks.")
         
     return entries, tracks_info
 
@@ -400,6 +519,8 @@ def write_header(image_entries, image_widths, tracks_info):
     
     track_definitions = ""
     track_initializers = []
+    music_track_indexes = []
+    gubby_sfx_track_index = -1
     
     for idx, track in enumerate(tracks_info):
         chunk_ids = ", ".join(f"RESOURCE_ID_{name}" for name in track["chunk_names"])
@@ -413,8 +534,14 @@ static const uint32_t GABAGOOL_TRACK_{idx}_RESOURCE_IDS[GABAGOOL_TRACK_{idx}_CHU
         track_initializers.append(
             f"  {{ {track['total_samples']}u, {track['encoded_bytes']}u, GABAGOOL_TRACK_{idx}_CHUNKS, GABAGOOL_TRACK_{idx}_RESOURCE_IDS }}"
         )
+        if track.get("role") == "sfx":
+            if track["filename"].lower() == "gubbysfx.ogg":
+                gubby_sfx_track_index = idx
+        else:
+            music_track_indexes.append(idx)
         
     track_initializers_str = ",\n".join(track_initializers)
+    music_track_indexes_str = ", ".join(f"{idx}u" for idx in music_track_indexes) or "0u"
     
     HEADER.write_text(f"""#pragma once
 
@@ -426,6 +553,8 @@ static const uint32_t GABAGOOL_TRACK_{idx}_RESOURCE_IDS[GABAGOOL_TRACK_{idx}_CHU
 #define GABAGOOL_AUDIO_UPSAMPLE {AUDIO_UPSAMPLE}
 #define GABAGOOL_IMAGE_COUNT {len(image_entries)}
 #define GABAGOOL_AUDIO_TRACK_COUNT {len(tracks_info)}
+#define GABAGOOL_MUSIC_TRACK_COUNT {len(music_track_indexes)}
+#define GABAGOOL_GUBBY_SFX_TRACK_INDEX {gubby_sfx_track_index}
 
 static const uint32_t GABAGOOL_IMAGE_RESOURCE_IDS[GABAGOOL_IMAGE_COUNT] = {{
   {image_ids}
@@ -445,6 +574,10 @@ typedef struct {{
 
 static const GabagoolAudioTrack GABAGOOL_AUDIO_TRACKS[GABAGOOL_AUDIO_TRACK_COUNT] = {{
 {track_initializers_str}
+}};
+
+static const uint8_t GABAGOOL_MUSIC_TRACK_INDEXES[GABAGOOL_MUSIC_TRACK_COUNT] = {{
+  {music_track_indexes_str}
 }};
 """)
 

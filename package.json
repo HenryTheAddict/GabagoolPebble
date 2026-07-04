@@ -100,6 +100,16 @@
           "file": "generated/audio_02_00.ad2"
         },
         {
+          "type": "raw",
+          "name": "AUDIO_02_01",
+          "file": "generated/audio_02_01.ad2"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_02_02",
+          "file": "generated/audio_02_02.ad2"
+        },
+        {
           "type": "bitmap",
           "name": "PET_EGG",
           "file": "generated/gubbyshapedegg.png",

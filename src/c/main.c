@@ -281,9 +281,6 @@ typedef struct {
   uint32_t samples_remaining;
   int16_t predictor;
   int step_index;
-  uint32_t resample_error;
-  int8_t current_sample;
-  uint8_t repeat_count;
   uint8_t packed_byte;
   uint8_t packed_shift;
 } AudioDecoderState;
@@ -419,17 +416,10 @@ static void apply_wipe_effect(GContext *ctx, int progress, bool incoming) {
 static void swap_to_transition_target(void) {
   if (s_current_bitmap) {
     gbitmap_destroy(s_current_bitmap);
-    s_current_bitmap = NULL;
-  }
-  if (s_next_bitmap) {
-    gbitmap_destroy(s_next_bitmap);
-    s_next_bitmap = NULL;
   }
   s_current_bitmap = s_next_bitmap;
   s_next_bitmap = NULL;
-  if (s_current_bitmap) {
-    s_current_index = s_next_index;
-  }
+  s_current_index = s_next_index;
 }
 
 static void draw_transition(GContext *ctx) {
@@ -911,7 +901,7 @@ static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
   return true;
 }
 
-static bool audio_decoder_next_source_sample(AudioDecoderState *decoder) {
+static bool audio_decoder_next_output_sample(AudioDecoderState *decoder, int8_t *sample) {
   if (!decoder->active || decoder->samples_remaining == 0) {
     decoder->active = false;
     return false;
@@ -927,26 +917,8 @@ static bool audio_decoder_next_source_sample(AudioDecoderState *decoder) {
 
   uint8_t code = (decoder->packed_byte >> decoder->packed_shift) & 0x3;
   decoder->packed_shift += 2;
-  decoder->current_sample = (int8_t)decode_audio_code(decoder, code);
+  *sample = (int8_t)decode_audio_code(decoder, code);
   decoder->samples_remaining--;
-
-  decoder->resample_error += GABAGOOL_AUDIO_RATE;
-  decoder->repeat_count = 0;
-  while (decoder->resample_error >= GABAGOOL_AUDIO_SOURCE_RATE) {
-    decoder->repeat_count++;
-    decoder->resample_error -= GABAGOOL_AUDIO_SOURCE_RATE;
-  }
-  return true;
-}
-
-static bool audio_decoder_next_output_sample(AudioDecoderState *decoder, int8_t *sample) {
-  while (decoder->repeat_count == 0) {
-    if (!audio_decoder_next_source_sample(decoder)) {
-      return false;
-    }
-  }
-  *sample = decoder->current_sample;
-  decoder->repeat_count--;
   return true;
 }
 

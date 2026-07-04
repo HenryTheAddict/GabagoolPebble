@@ -10,7 +10,6 @@ from pathlib import Path
 
 from PIL import Image
 
-
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED = ROOT / "resources" / "generated"
 HEADER = ROOT / "src" / "c" / "generated_assets.h"
@@ -19,14 +18,16 @@ AUDIO_CACHE = GENERATED / "audio_cache.json"
 
 SCREEN_W = 200
 SCREEN_H = 228
-PAN_W = 320
+PAN_W = 950
+IMAGE_STRIP_W = 50
 AUDIO_RATE = 8000
-AUDIO_SOURCE_RATE = 8000
+AUDIO_SOURCE_RATE = 7500
 AUDIO_MAX_UPSAMPLE = math.ceil(AUDIO_RATE / AUDIO_SOURCE_RATE)
 AUDIO_CODEC_BITS = 4
 AUDIO_CHUNK_BYTES = 60 * 1024
 AUDIO_CACHE_VERSION = 2
-SFX_AUDIO_FILES = {"gubbysfx.ogg"}
+SFX_AUDIO_FILES = {"gubbysfx.ogg", "jp1.ogg", "jp2.ogg", "jp3.ogg", "jp4.ogg", "jp5.ogg"}
+MAX_IMAGE_TILES = math.ceil(PAN_W / IMAGE_STRIP_W)
 
 PHOTO_FILES = [
     "welcome.png",
@@ -100,17 +101,19 @@ def crop_cover(image, target_w, target_h):
 def crop_cover_background(image, target_h):
     src_w, src_h = image.size
     scale = target_h / src_h
-    new_w = math.ceil(src_w * scale)
-    if new_w > PAN_W:
+    scaled_w = math.ceil(src_w * scale)
+
+    if scaled_w < SCREEN_W:
+        scale = SCREEN_W / src_w
+        new_w = SCREEN_W
+    elif scaled_w > PAN_W:
         new_w = PAN_W
         scale = PAN_W / src_w
         if src_h * scale < target_h:
             scale = target_h / src_h
             new_w = PAN_W
     else:
-        if new_w < 200:
-            scale = 200 / src_w
-            new_w = 200
+        new_w = scaled_w
 
     new_h = math.ceil(src_h * scale)
     resized = image.resize((math.ceil(src_w * scale), new_h), Image.Resampling.LANCZOS)
@@ -124,10 +127,10 @@ def write_palette_png(image, path):
     for r, g, b in PEBBLE_PALETTE:
         palette.extend([r, g, b])
     palette.extend([0] * (768 - len(palette)))
-    
+
     palette_img = Image.new("P", (1, 1))
     palette_img.putpalette(palette)
-    
+
     paletted = image.quantize(palette=palette_img, dither=Image.Dither.NONE)
     paletted.save(path, optimize=True)
 
@@ -135,6 +138,9 @@ def write_palette_png(image, path):
 def convert_images():
     image_entries = []
     image_widths = []
+    tile_counts = []
+    for path in GENERATED.glob("photo_*.png"):
+        path.unlink()
     for index, name in enumerate(PHOTO_FILES):
         source = ROOT / name
         if not source.exists():
@@ -143,14 +149,22 @@ def convert_images():
         strip = crop_cover_background(image, SCREEN_H)
         dithered = dither_to_pebble_palette(strip)
         image_widths.append(dithered.width)
-        out_path = GENERATED / f"photo_{index:02d}.png"
-        write_palette_png(dithered, out_path)
-        image_entries.append({
-            "type": "bitmap",
-            "name": f"IMAGE_{index:02d}",
-            "file": f"generated/photo_{index:02d}.png",
-            "memoryFormat": "8Bit"
-        })
+
+        num_tiles = math.ceil(dithered.width / IMAGE_STRIP_W)
+        tile_counts.append(num_tiles)
+        for t in range(num_tiles):
+            left = t * IMAGE_STRIP_W
+            right = min(left + IMAGE_STRIP_W, dithered.width)
+            tile = Image.new("RGB", (IMAGE_STRIP_W, SCREEN_H), (0, 0, 0))
+            tile.paste(dithered.crop((left, 0, right, SCREEN_H)), (0, 0))
+            out_path = GENERATED / f"photo_{index:02d}_{t:02d}.png"
+            write_palette_png(tile, out_path)
+            image_entries.append({
+                "type": "bitmap",
+                "name": f"IMAGE_{index:02d}_{t:02d}",
+                "file": f"generated/photo_{index:02d}_{t:02d}.png",
+                "memoryFormat": "8Bit"
+            })
 
     icon_source = Image.open(ROOT / PHOTO_FILES[1]).convert("RGB")
     icon = dither_to_pebble_palette(crop_cover(icon_source, 25, 25))
@@ -163,7 +177,7 @@ def convert_images():
         "menuIcon": True,
         "memoryFormat": "8Bit"
     }
-    return icon_entry, image_entries, image_widths
+    return icon_entry, image_entries, image_widths, tile_counts
 
 
 def convert_frame_to_pebble_png8(frame):
@@ -199,13 +213,21 @@ def convert_pet_assets():
         "eggtap1.png",
         "eggtap2.png",
         "eggtap3.png",
-        "deadgubby.png"
+        "deadgubby.png",
+        "jpegg.png",
+        "jpegg1.png",
+        "jpegg2.png",
+        "jpegg3.png",
+        "jp idle.png",
+        "jpet.png",
+        "jpdead.png"
     ]
     for name in static_files:
         src = ROOT / name
         if src.exists():
-            shutil.copy2(src, GENERATED / name)
-            
+            dst_name = name.replace(" ", "_")
+            shutil.copy2(src, GENERATED / dst_name)
+
     gif_files = [
         ("gubby.gif", "gubby.png"),
         ("gubbypetted.gif", "gubbypetted.png"),
@@ -217,7 +239,7 @@ def convert_pet_assets():
             subprocess.run([
                 "wsl", "/home/h3nry/.local/bin/gif2apng", "-z0", src_name, f"resources/generated/{dst_name}"
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            
+
     pet_entries = [
         {
             "type": "bitmap",
@@ -263,8 +285,64 @@ def convert_pet_assets():
             "type": "raw",
             "name": "PET_DEATH_ANIM",
             "file": "generated/gubbydeath.png"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_EGG",
+            "file": "generated/jpegg.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_EGG_TAP1",
+            "file": "generated/jpegg1.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_EGG_TAP2",
+            "file": "generated/jpegg2.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_EGG_TAP3",
+            "file": "generated/jpegg3.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_DEAD",
+            "file": "generated/jpdead.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_IDLE",
+            "file": "generated/jp_idle.png",
+            "memoryFormat": "8Bit"
+        },
+        {
+            "type": "bitmap",
+            "name": "JP_PET",
+            "file": "generated/jpet.png",
+            "memoryFormat": "8Bit"
         }
     ]
+
+    space_source = ROOT / "space.jpg"
+    if space_source.exists():
+        space_img = Image.open(space_source).convert("RGB")
+        space_cropped = crop_cover(space_img, SCREEN_W, SCREEN_H)
+        space_dithered = dither_to_pebble_palette(space_cropped)
+        write_palette_png(space_dithered, GENERATED / "space.png")
+        pet_entries.append({
+            "type": "bitmap",
+            "name": "BG_SPACE",
+            "file": "generated/space.png",
+            "memoryFormat": "8Bit"
+        })
+
     return pet_entries
 
 
@@ -518,13 +596,13 @@ def convert_audio():
             continue
 
         pcm = decode_ogg_to_pcm(ogg_file)
-        
+
         # Normalize PCM to use full 8-bit dynamic range
         max_val = max(abs(s) for s in pcm)
         if max_val > 0:
             scale = 127.0 / max_val
             pcm = [max(-128, min(127, int(round(s * scale)))) for s in pcm]
-            
+
         encoded = encode_4bit_adpcm(pcm)
 
         chunk_count = math.ceil(len(encoded) / AUDIO_CHUNK_BYTES)
@@ -537,7 +615,7 @@ def convert_audio():
             chunk_file = f"audio_{track_idx:02d}_{chunk_idx:02d}.ad4"
             out_path = GENERATED / chunk_file
             out_path.write_bytes(chunk)
-            
+
             entries.append({
                 "type": "raw",
                 "name": name,
@@ -546,7 +624,7 @@ def convert_audio():
             track_chunk_names.append(name)
             track_chunk_files.append(chunk_file)
             track_chunk_sizes.append(len(chunk))
-            
+
         track_info = {
             "filename": ogg_file.name,
             "total_samples": len(pcm),
@@ -567,7 +645,7 @@ def convert_audio():
     AUDIO_CACHE.write_text(json.dumps(next_cache, indent=2) + "\n")
     if cache_hits:
         print(f"Audio cache: reused {cache_hits} of {len(ogg_files)} tracks.")
-        
+
     return entries, tracks_info
 
 
@@ -577,15 +655,23 @@ def update_package(icon_entry, image_entries, audio_entries, pet_entries):
     PACKAGE.write_text(json.dumps(package, indent=2) + "\n")
 
 
-def write_header(image_entries, image_widths, tracks_info):
-    image_ids = ", ".join(f"RESOURCE_ID_{entry['name']}" for entry in image_entries)
+def write_header(image_entries, image_widths, tracks_info, tile_counts):
     widths_str = ", ".join(str(w) for w in image_widths)
-    
+    counts_str = ", ".join(str(c) for c in tile_counts)
+
+    tiles_str = ""
+    for idx, num_tiles in enumerate(tile_counts):
+        tile_ids = [f"RESOURCE_ID_IMAGE_{idx:02d}_{t:02d}" for t in range(num_tiles)]
+        tile_ids.extend(["0"] * (MAX_IMAGE_TILES - num_tiles))
+        tiles_str += "  { " + ", ".join(tile_ids) + " },\n"
+
     track_definitions = ""
     track_initializers = []
     music_track_indexes = []
     gubby_sfx_track_index = -1
-    
+
+    # Collect JP SFX tracks and sort them by filename (jp1.ogg to jp5.ogg)
+    jp_sfx_list = []
     for idx, track in enumerate(tracks_info):
         chunk_ids = ", ".join(f"RESOURCE_ID_{name}" for name in track["chunk_names"])
         track_definitions += f"""// Track {idx}: {track['filename']}
@@ -599,30 +685,44 @@ static const uint32_t GABAGOOL_TRACK_{idx}_RESOURCE_IDS[GABAGOOL_TRACK_{idx}_CHU
             f"  {{ {track['total_samples']}u, {track['encoded_bytes']}u, GABAGOOL_TRACK_{idx}_CHUNKS, GABAGOOL_TRACK_{idx}_RESOURCE_IDS }}"
         )
         if track.get("role") == "sfx":
-            if track["filename"].lower() == "gubbysfx.ogg":
+            filename_lower = track["filename"].lower()
+            if filename_lower == "gubbysfx.ogg":
                 gubby_sfx_track_index = idx
+            elif filename_lower in {"jp1.ogg", "jp2.ogg", "jp3.ogg", "jp4.ogg", "jp5.ogg"}:
+                jp_sfx_list.append((filename_lower, idx))
         else:
             music_track_indexes.append(idx)
-        
+
+    jp_sfx_list.sort(key=lambda x: x[0])
+    jp_sfx_track_indexes = [x[1] for x in jp_sfx_list]
+
     track_initializers_str = ",\n".join(track_initializers)
     music_track_indexes_str = ", ".join(f"{idx}u" for idx in music_track_indexes) or "0u"
-    
+    jp_sfx_track_indexes_str = ", ".join(f"{idx}u" for idx in jp_sfx_track_indexes) or "0u"
+
     HEADER.write_text(f"""#pragma once
 
 #define GABAGOOL_SCREEN_W {SCREEN_W}
 #define GABAGOOL_SCREEN_H {SCREEN_H}
 #define GABAGOOL_PAN_W {PAN_W}
+#define GABAGOOL_IMAGE_STRIP_W {IMAGE_STRIP_W}
 #define GABAGOOL_AUDIO_RATE {AUDIO_RATE}
 #define GABAGOOL_AUDIO_SOURCE_RATE {AUDIO_SOURCE_RATE}
 #define GABAGOOL_AUDIO_MAX_UPSAMPLE {AUDIO_MAX_UPSAMPLE}
 #define GABAGOOL_AUDIO_CODEC_BITS {AUDIO_CODEC_BITS}
-#define GABAGOOL_IMAGE_COUNT {len(image_entries)}
+#define GABAGOOL_IMAGE_COUNT {len(image_widths)}
+#define GABAGOOL_MAX_IMAGE_TILES {MAX_IMAGE_TILES}
 #define GABAGOOL_AUDIO_TRACK_COUNT {len(tracks_info)}
 #define GABAGOOL_MUSIC_TRACK_COUNT {len(music_track_indexes)}
 #define GABAGOOL_GUBBY_SFX_TRACK_INDEX {gubby_sfx_track_index}
+#define GABAGOOL_JP_SFX_TRACK_COUNT {len(jp_sfx_track_indexes)}
 
-static const uint32_t GABAGOOL_IMAGE_RESOURCE_IDS[GABAGOOL_IMAGE_COUNT] = {{
-  {image_ids}
+static const uint32_t GABAGOOL_IMAGE_TILES[GABAGOOL_IMAGE_COUNT][GABAGOOL_MAX_IMAGE_TILES] = {{
+{tiles_str}
+}};
+
+static const uint8_t GABAGOOL_IMAGE_TILE_COUNTS[GABAGOOL_IMAGE_COUNT] = {{
+  {counts_str}
 }};
 
 static const uint16_t GABAGOOL_IMAGE_WIDTHS[GABAGOOL_IMAGE_COUNT] = {{
@@ -644,6 +744,10 @@ static const GabagoolAudioTrack GABAGOOL_AUDIO_TRACKS[GABAGOOL_AUDIO_TRACK_COUNT
 static const uint8_t GABAGOOL_MUSIC_TRACK_INDEXES[GABAGOOL_MUSIC_TRACK_COUNT] = {{
   {music_track_indexes_str}
 }};
+
+static const uint8_t GABAGOOL_JP_SFX_TRACK_INDEXES[GABAGOOL_JP_SFX_TRACK_COUNT] = {{
+  {jp_sfx_track_indexes_str}
+}};
 """)
 
 
@@ -652,12 +756,12 @@ def main():
     parser.parse_args()
 
     GENERATED.mkdir(parents=True, exist_ok=True)
-    icon_entry, image_entries, image_widths = convert_images()
+    icon_entry, image_entries, image_widths, tile_counts = convert_images()
     audio_entries, tracks_info = convert_audio()
     pet_entries = convert_pet_assets()
     update_package(icon_entry, image_entries, audio_entries, pet_entries)
-    write_header(image_entries, image_widths, tracks_info)
-    
+    write_header(image_entries, image_widths, tracks_info, tile_counts)
+
     total_samples = sum(t["total_samples"] for t in tracks_info)
     encoded_bytes = sum(t["encoded_bytes"] for t in tracks_info)
     print(f"Generated {len(image_entries)} dithered images and {len(audio_entries)} audio chunks.")

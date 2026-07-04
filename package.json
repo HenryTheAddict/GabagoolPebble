@@ -38,50 +38,398 @@
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_00",
-          "file": "generated/photo_00.png",
+          "name": "IMAGE_00_00",
+          "file": "generated/photo_00_00.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_01",
-          "file": "generated/photo_01.png",
+          "name": "IMAGE_00_01",
+          "file": "generated/photo_00_01.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_02",
-          "file": "generated/photo_02.png",
+          "name": "IMAGE_00_02",
+          "file": "generated/photo_00_02.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_03",
-          "file": "generated/photo_03.png",
+          "name": "IMAGE_00_03",
+          "file": "generated/photo_00_03.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_04",
-          "file": "generated/photo_04.png",
+          "name": "IMAGE_00_04",
+          "file": "generated/photo_00_04.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_05",
-          "file": "generated/photo_05.png",
+          "name": "IMAGE_00_05",
+          "file": "generated/photo_00_05.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_06",
-          "file": "generated/photo_06.png",
+          "name": "IMAGE_00_06",
+          "file": "generated/photo_00_06.png",
           "memoryFormat": "8Bit"
         },
         {
           "type": "bitmap",
-          "name": "IMAGE_07",
-          "file": "generated/photo_07.png",
+          "name": "IMAGE_00_07",
+          "file": "generated/photo_00_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_00_08",
+          "file": "generated/photo_00_08.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01_00",
+          "file": "generated/photo_01_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01_01",
+          "file": "generated/photo_01_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01_02",
+          "file": "generated/photo_01_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01_03",
+          "file": "generated/photo_01_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_01_04",
+          "file": "generated/photo_01_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_00",
+          "file": "generated/photo_02_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_01",
+          "file": "generated/photo_02_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_02",
+          "file": "generated/photo_02_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_03",
+          "file": "generated/photo_02_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_04",
+          "file": "generated/photo_02_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_05",
+          "file": "generated/photo_02_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_06",
+          "file": "generated/photo_02_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_07",
+          "file": "generated/photo_02_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_02_08",
+          "file": "generated/photo_02_08.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_00",
+          "file": "generated/photo_03_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_01",
+          "file": "generated/photo_03_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_02",
+          "file": "generated/photo_03_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_03",
+          "file": "generated/photo_03_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_04",
+          "file": "generated/photo_03_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_05",
+          "file": "generated/photo_03_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_06",
+          "file": "generated/photo_03_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_07",
+          "file": "generated/photo_03_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_03_08",
+          "file": "generated/photo_03_08.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_00",
+          "file": "generated/photo_04_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_01",
+          "file": "generated/photo_04_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_02",
+          "file": "generated/photo_04_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_03",
+          "file": "generated/photo_04_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_04",
+          "file": "generated/photo_04_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_05",
+          "file": "generated/photo_04_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_06",
+          "file": "generated/photo_04_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_07",
+          "file": "generated/photo_04_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_04_08",
+          "file": "generated/photo_04_08.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_00",
+          "file": "generated/photo_05_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_01",
+          "file": "generated/photo_05_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_02",
+          "file": "generated/photo_05_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_03",
+          "file": "generated/photo_05_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_04",
+          "file": "generated/photo_05_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_05",
+          "file": "generated/photo_05_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_06",
+          "file": "generated/photo_05_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_07",
+          "file": "generated/photo_05_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_05_08",
+          "file": "generated/photo_05_08.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_00",
+          "file": "generated/photo_06_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_01",
+          "file": "generated/photo_06_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_02",
+          "file": "generated/photo_06_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_03",
+          "file": "generated/photo_06_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_04",
+          "file": "generated/photo_06_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_05",
+          "file": "generated/photo_06_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_06_06",
+          "file": "generated/photo_06_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_00",
+          "file": "generated/photo_07_00.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_01",
+          "file": "generated/photo_07_01.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_02",
+          "file": "generated/photo_07_02.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_03",
+          "file": "generated/photo_07_03.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_04",
+          "file": "generated/photo_07_04.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_05",
+          "file": "generated/photo_07_05.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_06",
+          "file": "generated/photo_07_06.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_07",
+          "file": "generated/photo_07_07.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "IMAGE_07_08",
+          "file": "generated/photo_07_08.png",
           "memoryFormat": "8Bit"
         },
         {
@@ -96,8 +444,23 @@
         },
         {
           "type": "raw",
+          "name": "AUDIO_00_02",
+          "file": "generated/audio_00_02.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_00_03",
+          "file": "generated/audio_00_03.ad4"
+        },
+        {
+          "type": "raw",
           "name": "AUDIO_01_00",
           "file": "generated/audio_01_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_01_01",
+          "file": "generated/audio_01_01.ad4"
         },
         {
           "type": "raw",
@@ -106,28 +469,58 @@
         },
         {
           "type": "raw",
-          "name": "AUDIO_02_01",
-          "file": "generated/audio_02_01.ad4"
+          "name": "AUDIO_03_00",
+          "file": "generated/audio_03_00.ad4"
         },
         {
           "type": "raw",
-          "name": "AUDIO_02_02",
-          "file": "generated/audio_02_02.ad4"
+          "name": "AUDIO_03_01",
+          "file": "generated/audio_03_01.ad4"
         },
         {
           "type": "raw",
-          "name": "AUDIO_02_03",
-          "file": "generated/audio_02_03.ad4"
+          "name": "AUDIO_03_02",
+          "file": "generated/audio_03_02.ad4"
         },
         {
           "type": "raw",
-          "name": "AUDIO_02_04",
-          "file": "generated/audio_02_04.ad4"
+          "name": "AUDIO_03_03",
+          "file": "generated/audio_03_03.ad4"
         },
         {
           "type": "raw",
-          "name": "AUDIO_02_05",
-          "file": "generated/audio_02_05.ad4"
+          "name": "AUDIO_03_04",
+          "file": "generated/audio_03_04.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_03_05",
+          "file": "generated/audio_03_05.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_04_00",
+          "file": "generated/audio_04_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_05_00",
+          "file": "generated/audio_05_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_06_00",
+          "file": "generated/audio_06_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_07_00",
+          "file": "generated/audio_07_00.ad4"
+        },
+        {
+          "type": "raw",
+          "name": "AUDIO_08_00",
+          "file": "generated/audio_08_00.ad4"
         },
         {
           "type": "bitmap",
@@ -173,6 +566,54 @@
           "type": "raw",
           "name": "PET_DEATH_ANIM",
           "file": "generated/gubbydeath.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_EGG",
+          "file": "generated/jpegg.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_EGG_TAP1",
+          "file": "generated/jpegg1.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_EGG_TAP2",
+          "file": "generated/jpegg2.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_EGG_TAP3",
+          "file": "generated/jpegg3.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_DEAD",
+          "file": "generated/jpdead.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_IDLE",
+          "file": "generated/jp_idle.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "JP_PET",
+          "file": "generated/jpet.png",
+          "memoryFormat": "8Bit"
+        },
+        {
+          "type": "bitmap",
+          "name": "BG_SPACE",
+          "file": "generated/space.png",
+          "memoryFormat": "8Bit"
         }
       ]
     }

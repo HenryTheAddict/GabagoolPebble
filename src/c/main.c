@@ -20,6 +20,10 @@
 #define SFX_COOLDOWN_MS 250
 #define FLING_KILL_SPEED 9.0f
 #define DEAD_HOLD_MS 3000
+#define AUDIO_READ_BUFFER 32
+
+// Set to 0 to disable physical button controls (touch-only mode)
+#define DEBUG_BUTTONS 1
 
 #define PERSIST_KEY_PET_STATE 100
 #define PERSIST_KEY_LAST_PET_TIME 101
@@ -34,7 +38,8 @@ typedef enum {
 } TransitionKind;
 
 typedef enum {
-  PetStateEgg = 0,
+  PetStateNone = 0,
+  PetStateEgg,
   PetStateEggTap1,
   PetStateEggTap2,
   PetStateEggTap3,
@@ -84,7 +89,7 @@ static bool s_transitioning;
 static TransitionKind s_transition_kind;
 
 // Pet state variables
-static PetState s_pet_state = PetStateEgg;
+static PetState s_pet_state = PetStateNone;
 static int s_egg_taps = 0;
 static int s_pet_x = 84;
 static int s_pet_y = 98;
@@ -151,6 +156,9 @@ static void set_static_pet_sprite(uint32_t res_id) {
 
 static void sync_static_pet_sprite(void) {
   switch (s_pet_state) {
+    case PetStateNone:
+      set_static_pet_sprite(0);
+      break;
     case PetStateEgg:
       set_static_pet_sprite(RESOURCE_ID_PET_EGG);
       break;
@@ -257,6 +265,7 @@ static void release_grab(void) {
     s_flash_frames = 3;
     kill_gubby(released_index);
     play_gubby_sfx();
+    vibes_long_pulse();
     return;
   }
   gubby->fvx = clamp_float(fvx, -PET_MAX_SPEED, PET_MAX_SPEED);
@@ -313,6 +322,9 @@ typedef struct {
   int step_index;
   uint8_t packed_byte;
   uint8_t packed_shift;
+  uint8_t read_buf[AUDIO_READ_BUFFER];
+  uint32_t read_buf_pos;
+  uint32_t read_buf_len;
 } AudioDecoderState;
 
 static bool s_audio_active;
@@ -605,6 +617,9 @@ static void draw_pet(GContext *ctx) {
   }
 
   switch (s_pet_state) {
+    case PetStateNone:
+      // Nothing drawn - waiting for first touch
+      break;
     case PetStateEgg:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG, GRect(36, 50, 128, 128));
       break;
@@ -772,6 +787,7 @@ static void trigger_breeding(void) {
     s_last_rub_dir = 0;
     s_flash_frames = 2;
     play_gubby_sfx();
+    vibes_double_pulse();
     return;
   }
   s_pet_state = PetStateEgg;
@@ -801,6 +817,7 @@ static void update_pet_logic(void) {
       memset(s_gubbys, 0, sizeof(s_gubbys));
       s_gubby_count = 0;
       s_grabbed_gubby = -1;
+      vibes_double_pulse();
       redraw_now();
     }
   }
@@ -809,6 +826,7 @@ static void update_pet_logic(void) {
     s_hatch_progress += 2;
     if (s_hatch_progress == 40) {
       set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
+      vibes_long_pulse();
     }
     if (s_hatch_progress >= 80) {
       s_pet_state = PetStateNormal;
@@ -828,6 +846,9 @@ static void update_pet_logic(void) {
       s_pet_state = PetStateDead;
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
+      static const uint32_t death_segments[] = { 200, 100, 200, 100, 400 };
+      VibePattern death_pat = { .durations = death_segments, .num_segments = 5 };
+      vibes_enqueue_custom_pattern(death_pat);
       return;
     }
 
@@ -1004,6 +1025,12 @@ static void audio_decoder_start(AudioDecoderState *decoder, int track_index) {
 }
 
 static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
+  // Serve from read buffer if available
+  if (decoder->read_buf_pos < decoder->read_buf_len) {
+    *byte = decoder->read_buf[decoder->read_buf_pos++];
+    return true;
+  }
+
   const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[decoder->track_index];
   if (!decoder->active || decoder->chunk_index >= track->chunk_count) {
     return false;
@@ -1019,11 +1046,18 @@ static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
     decoder->chunk_size = resource_size(decoder->handle);
   }
 
-  size_t read = resource_load_byte_range(decoder->handle, decoder->chunk_offset, byte, 1);
-  if (read == 0) {
+  uint32_t to_read = decoder->chunk_size - decoder->chunk_offset;
+  if (to_read > AUDIO_READ_BUFFER) {
+    to_read = AUDIO_READ_BUFFER;
+  }
+  size_t nread = resource_load_byte_range(decoder->handle, decoder->chunk_offset, decoder->read_buf, to_read);
+  if (nread == 0) {
     return false;
   }
-  decoder->chunk_offset++;
+  decoder->chunk_offset += nread;
+  decoder->read_buf_pos = 1;
+  decoder->read_buf_len = (uint32_t)nread;
+  *byte = decoder->read_buf[0];
   return true;
 }
 
@@ -1215,22 +1249,30 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
 
-  if (s_pet_state == PetStateEgg) {
+  if (s_pet_state == PetStateNone) {
+    s_pet_state = PetStateEgg;
+    persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    vibes_short_pulse();
+  } else if (s_pet_state == PetStateEgg) {
     s_egg_taps = 1;
     s_pet_state = PetStateEggTap1;
     persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    vibes_short_pulse();
   } else if (s_pet_state == PetStateEggTap1) {
     s_egg_taps = 2;
     s_pet_state = PetStateEggTap2;
     persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    vibes_short_pulse();
   } else if (s_pet_state == PetStateEggTap2) {
     s_egg_taps = 3;
     s_pet_state = PetStateEggTap3;
     persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    vibes_short_pulse();
   } else if (s_pet_state == PetStateEggTap3) {
     s_egg_taps = 4;
     s_pet_state = PetStateHatching;
     s_hatch_progress = 0;
+    vibes_double_pulse();
   } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
       spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
@@ -1241,6 +1283,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
     set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
     play_gubby_sfx();
+    vibes_short_pulse();
   } else if (s_pet_state == PetStateDead) {
     s_dead_touching = true;
     s_dead_hold_ms = 0;
@@ -1348,11 +1391,13 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
 
 static void click_config_provider(void *context) {
   (void)context;
+#if DEBUG_BUTTONS
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
   window_multi_click_subscribe(BUTTON_ID_SELECT, 2, 2, 0, true, select_double_click_handler);
   window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, select_long_click_release_handler);
   window_single_click_subscribe(BUTTON_ID_UP, up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, down_click_handler);
+#endif
 }
 
 static void window_load(Window *window) {
@@ -1369,7 +1414,7 @@ static void window_load(Window *window) {
   if (persist_exists(PERSIST_KEY_PET_STATE)) {
     s_pet_state = persist_read_int(PERSIST_KEY_PET_STATE);
   } else {
-    s_pet_state = PetStateEgg;
+    s_pet_state = PetStateNone;
   }
   
   if (persist_exists(PERSIST_KEY_LAST_PET_TIME)) {
@@ -1459,29 +1504,38 @@ static void touch_handler(const TouchEvent *event, void *context) {
   int ty = event->y;
   
   if (event->type == TouchEvent_Touchdown) {
-    if (s_pet_state == PetStateEgg) {
+    if (s_pet_state == PetStateNone) {
+      // First touch - spawn the egg
+      s_pet_state = PetStateEgg;
+      persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      vibes_short_pulse();
+    } else if (s_pet_state == PetStateEgg) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
         s_egg_taps = 1;
         s_pet_state = PetStateEggTap1;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+        vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap1) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
         s_egg_taps = 2;
         s_pet_state = PetStateEggTap2;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+        vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap2) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
         s_egg_taps = 3;
         s_pet_state = PetStateEggTap3;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+        vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap3) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
         s_egg_taps = 4;
         s_pet_state = PetStateHatching;
         s_hatch_progress = 0;
+        vibes_double_pulse();
       }
     } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
       int hit = hit_test_gubby(tx, ty);
@@ -1508,6 +1562,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
         persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
         set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
         play_gubby_sfx();
+        vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateDead) {
       if (hit_test_gubby(tx, ty) >= 0) {

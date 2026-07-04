@@ -21,8 +21,8 @@ SCREEN_W = 200
 SCREEN_H = 228
 PAN_W = 220
 AUDIO_RATE = 8000
-AUDIO_SOURCE_RATE = 1000
-AUDIO_UPSAMPLE = AUDIO_RATE // AUDIO_SOURCE_RATE
+AUDIO_SOURCE_RATE = 1500
+AUDIO_MAX_UPSAMPLE = math.ceil(AUDIO_RATE / AUDIO_SOURCE_RATE)
 AUDIO_CHUNK_BYTES = 60 * 1024
 AUDIO_CACHE_VERSION = 1
 SFX_AUDIO_FILES = {"gubbysfx.ogg"}
@@ -360,7 +360,7 @@ def audio_cache_settings():
         "version": AUDIO_CACHE_VERSION,
         "source_rate": AUDIO_SOURCE_RATE,
         "rate": AUDIO_RATE,
-        "upsample": AUDIO_UPSAMPLE,
+        "max_upsample": AUDIO_MAX_UPSAMPLE,
         "chunk_bytes": AUDIO_CHUNK_BYTES,
         "encoder": "2bit-adpcm-v1",
     }
@@ -550,7 +550,7 @@ static const uint32_t GABAGOOL_TRACK_{idx}_RESOURCE_IDS[GABAGOOL_TRACK_{idx}_CHU
 #define GABAGOOL_PAN_W {PAN_W}
 #define GABAGOOL_AUDIO_RATE {AUDIO_RATE}
 #define GABAGOOL_AUDIO_SOURCE_RATE {AUDIO_SOURCE_RATE}
-#define GABAGOOL_AUDIO_UPSAMPLE {AUDIO_UPSAMPLE}
+#define GABAGOOL_AUDIO_MAX_UPSAMPLE {AUDIO_MAX_UPSAMPLE}
 #define GABAGOOL_IMAGE_COUNT {len(image_entries)}
 #define GABAGOOL_AUDIO_TRACK_COUNT {len(tracks_info)}
 #define GABAGOOL_MUSIC_TRACK_COUNT {len(music_track_indexes)}

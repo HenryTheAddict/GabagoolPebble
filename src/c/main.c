@@ -8,7 +8,7 @@
 #define TRANSITION_MS 900
 #define BACKLIGHT_TIMEOUT_MS (5 * 60 * 1000)
 #define AUDIO_ENCODED_BUFFER 16
-#define AUDIO_PCM_BUFFER (AUDIO_ENCODED_BUFFER * 4 * GABAGOOL_AUDIO_UPSAMPLE)
+#define AUDIO_PCM_BUFFER (AUDIO_ENCODED_BUFFER * 4 * GABAGOOL_AUDIO_MAX_UPSAMPLE)
 #define AUDIO_STREAM_PASSES 8
 #define GABAGOOL_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define PET_GRAVITY 0.38f
@@ -17,6 +17,8 @@
 #define PET_FLOOR_BOUNCE 0.60f
 #define PET_FLOOR_FRICTION 0.94f
 #define PET_MAX_SPEED 8.0f
+#define MAX_GUBBYS 8
+#define SFX_COOLDOWN_MS 250
 
 #define PERSIST_KEY_PET_STATE 100
 #define PERSIST_KEY_LAST_PET_TIME 101
@@ -40,6 +42,23 @@ typedef enum {
   PetStatePetted,
   PetStateDead
 } PetState;
+
+typedef struct {
+  bool active;
+  bool grabbed;
+  int x;
+  int y;
+  int grab_offset_x;
+  int grab_offset_y;
+  int last_touch_x;
+  int last_touch_y;
+  int last_touch_dx;
+  int last_touch_dy;
+  float fx;
+  float fy;
+  float fvx;
+  float fvy;
+} GubbyPet;
 
 static void start_audio(void);
 static void stop_audio(void);
@@ -75,17 +94,14 @@ static uint32_t s_pet_frame_elapsed_ms = 0;
 
 static uint32_t s_last_pet_time = 0;
 static bool s_pet_grabbed = false;
-static int s_pet_grab_offset_x = 16;
-static int s_pet_grab_offset_y = 16;
-static int s_last_touch_x = 0;
-static int s_last_touch_y = 0;
-static int s_last_touch_dx = 0;
-static int s_last_touch_dy = 0;
 static int s_rub_count = 0;
 static int s_last_rub_dir = 0;
 static int s_hatch_progress = 0;
 static int s_flash_frames = 0;
 static int s_pet_petted_frames = 0;
+static GubbyPet s_gubbys[MAX_GUBBYS];
+static int s_gubby_count = 0;
+static int s_grabbed_gubby = -1;
 
 static float s_pet_fx = 84.0f;
 static float s_pet_fy = 98.0f;
@@ -118,28 +134,98 @@ static void redraw_now(void) {
   }
 }
 
-static void set_pet_position(int x, int y) {
-  s_pet_x = clamp_int(x, 0, GABAGOOL_SCREEN_W - 32);
-  s_pet_y = clamp_int(y, 0, GABAGOOL_SCREEN_H - 32);
-  s_pet_fx = (float)s_pet_x;
-  s_pet_fy = (float)s_pet_y;
+static GubbyPet *gubby_at(int index) {
+  if (index < 0 || index >= MAX_GUBBYS || !s_gubbys[index].active) {
+    return NULL;
+  }
+  return &s_gubbys[index];
+}
+
+static void sync_primary_pet_position(void) {
+  GubbyPet *gubby = gubby_at(0);
+  if (gubby) {
+    s_pet_x = gubby->x;
+    s_pet_y = gubby->y;
+    s_pet_fx = gubby->fx;
+    s_pet_fy = gubby->fy;
+    s_pet_fvx = gubby->fvx;
+    s_pet_fvy = gubby->fvy;
+  }
+}
+
+static void set_gubby_position(GubbyPet *gubby, int x, int y) {
+  if (!gubby) {
+    return;
+  }
+  gubby->x = clamp_int(x, 0, GABAGOOL_SCREEN_W - 32);
+  gubby->y = clamp_int(y, 0, GABAGOOL_SCREEN_H - 32);
+  gubby->fx = (float)gubby->x;
+  gubby->fy = (float)gubby->y;
+  sync_primary_pet_position();
   redraw_now();
 }
 
 static void drag_pet_to(int tx, int ty) {
-  set_pet_position(tx - s_pet_grab_offset_x, ty - s_pet_grab_offset_y);
+  GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+  if (!gubby) {
+    return;
+  }
+  set_gubby_position(gubby, tx - gubby->grab_offset_x, ty - gubby->grab_offset_y);
 }
 
 static void release_grab(void) {
-  s_pet_grabbed = false;
-  s_pet_fx = (float)s_pet_x;
-  s_pet_fy = (float)s_pet_y;
-  s_pet_fvx = clamp_float((float)s_last_touch_dx * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
-  s_pet_fvy = clamp_float((float)s_last_touch_dy * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
-  if (s_pet_fvx > -0.3f && s_pet_fvx < 0.3f) {
-    s_pet_fvx = (rand() % 2 == 0 ? 1.2f : -1.2f);
+  GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+  if (!gubby) {
+    s_pet_grabbed = false;
+    s_grabbed_gubby = -1;
+    return;
   }
+  gubby->grabbed = false;
+  gubby->fx = (float)gubby->x;
+  gubby->fy = (float)gubby->y;
+  gubby->fvx = clamp_float((float)gubby->last_touch_dx * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
+  gubby->fvy = clamp_float((float)gubby->last_touch_dy * 0.45f, -PET_MAX_SPEED, PET_MAX_SPEED);
+  if (gubby->fvx > -0.3f && gubby->fvx < 0.3f) {
+    gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f);
+  }
+  s_pet_grabbed = false;
+  s_grabbed_gubby = -1;
+  sync_primary_pet_position();
   play_gubby_sfx();
+}
+
+static int spawn_gubby_at(int x, int y) {
+  if (s_gubby_count >= MAX_GUBBYS) {
+    return -1;
+  }
+  for (int i = 0; i < MAX_GUBBYS; i++) {
+    if (!s_gubbys[i].active) {
+      GubbyPet *gubby = &s_gubbys[i];
+      memset(gubby, 0, sizeof(*gubby));
+      gubby->active = true;
+      gubby->grab_offset_x = 16;
+      gubby->grab_offset_y = 16;
+      gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f) * (1.0f + (rand() % 100) / 100.0f);
+      gubby->fvy = -1.0f - (rand() % 100) / 120.0f;
+      set_gubby_position(gubby, x, y);
+      gubby->fvx = (rand() % 2 == 0 ? 1.2f : -1.2f) * (1.0f + (rand() % 100) / 100.0f);
+      gubby->fvy = -1.0f - (rand() % 100) / 120.0f;
+      s_gubby_count++;
+      sync_primary_pet_position();
+      return i;
+    }
+  }
+  return -1;
+}
+
+static int hit_test_gubby(int tx, int ty) {
+  for (int i = MAX_GUBBYS - 1; i >= 0; i--) {
+    GubbyPet *gubby = gubby_at(i);
+    if (gubby && tx >= gubby->x && tx <= gubby->x + 32 && ty >= gubby->y && ty <= gubby->y + 32) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 static GBitmap *s_static_pet_bitmap = NULL;
@@ -158,6 +244,10 @@ static uint8_t s_encoded_buffer[AUDIO_ENCODED_BUFFER];
 static int8_t s_pcm_buffer[AUDIO_PCM_BUFFER];
 static uint32_t s_pcm_count;
 static uint32_t s_pcm_offset;
+static uint32_t s_audio_resample_error;
+static bool s_audio_playing_sfx;
+static int s_audio_resume_track_index = -1;
+static int s_sfx_cooldown_ms = 0;
 
 static const int16_t s_audio_step_table[] = {
   2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 26, 31, 36,
@@ -363,6 +453,44 @@ static void draw_static_sprite(GContext *ctx, uint32_t res_id, GRect rect) {
   }
 }
 
+static void draw_center_light(GContext *ctx, int progress) {
+  int cx = GABAGOOL_SCREEN_W / 2;
+  int cy = GABAGOOL_SCREEN_H / 2;
+  int radius = 16 + progress * 3;
+  if (radius > 150) {
+    radius = 150;
+  }
+
+  graphics_context_set_stroke_width(ctx, 1);
+  graphics_context_set_stroke_color(ctx, GColorWhite);
+  for (int y = cy - radius; y <= cy + radius; y++) {
+    if (y < 0 || y >= GABAGOOL_SCREEN_H) {
+      continue;
+    }
+    for (int x = cx - radius; x <= cx + radius; x++) {
+      if (x < 0 || x >= GABAGOOL_SCREEN_W) {
+        continue;
+      }
+      int dx = x - cx;
+      int dy = y - cy;
+      int dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+      if (dist < radius && (((x * 3 + y * 5 + progress) & 7) == 0)) {
+        graphics_draw_pixel(ctx, GPoint(x, y));
+      }
+    }
+  }
+
+  graphics_context_set_stroke_color(ctx, GColorPastelYellow);
+  for (int i = 0; i < 12; i++) {
+    int seed = i * 37 + progress * 5;
+    int target_x = (seed * 23) % GABAGOOL_SCREEN_W;
+    int target_y = (seed * 17) % GABAGOOL_SCREEN_H;
+    if (((i + progress) & 1) == 0) {
+      graphics_draw_line(ctx, GPoint(cx, cy), GPoint(target_x, target_y));
+    }
+  }
+}
+
 static void draw_pet(GContext *ctx) {
   if (s_flash_frames > 0) {
     s_flash_frames--;
@@ -387,14 +515,7 @@ static void draw_pet(GContext *ctx) {
     case PetStateHatching:
       draw_static_sprite(ctx, RESOURCE_ID_PET_EGG_TAP3, GRect(36, 50, 128, 128));
       if (s_hatch_progress < 60) {
-        graphics_context_set_stroke_color(ctx, GColorPastelYellow);
-        graphics_context_set_stroke_width(ctx, 4);
-        int seed = s_hatch_progress ^ 0x5A;
-        for (int i = 0; i < 5; i++) {
-          int target_x = 20 + i * 40 + (seed % 15);
-          graphics_draw_line(ctx, GPoint(100, 0), GPoint(target_x, 114));
-          seed = seed * 31 + 17;
-        }
+        draw_center_light(ctx, s_hatch_progress);
       } else {
         int y = (s_hatch_progress - 60) * 3;
         if (s_pet_frame_bitmap) {
@@ -408,12 +529,33 @@ static void draw_pet(GContext *ctx) {
     case PetStatePetted:
       if (s_pet_frame_bitmap) {
         graphics_context_set_compositing_mode(ctx, GCompOpSet);
-        graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(s_pet_x, s_pet_y, 32, 32));
+        for (int i = 0; i < MAX_GUBBYS; i++) {
+          GubbyPet *gubby = gubby_at(i);
+          if (gubby) {
+            graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(gubby->x, gubby->y, 32, 32));
+          }
+        }
         graphics_context_set_compositing_mode(ctx, GCompOpAssign);
       }
       break;
     case PetStateDead:
-      draw_static_sprite(ctx, RESOURCE_ID_PET_DEAD, GRect(s_pet_x, s_pet_y, 32, 32));
+      if (s_pet_frame_bitmap) {
+        graphics_context_set_compositing_mode(ctx, GCompOpSet);
+        for (int i = 0; i < MAX_GUBBYS; i++) {
+          GubbyPet *gubby = gubby_at(i);
+          if (gubby) {
+            graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(gubby->x, gubby->y, 32, 32));
+          }
+        }
+        graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+      } else {
+        for (int i = 0; i < MAX_GUBBYS; i++) {
+          GubbyPet *gubby = gubby_at(i);
+          if (gubby) {
+            draw_static_sprite(ctx, RESOURCE_ID_PET_DEAD, GRect(gubby->x, gubby->y, 32, 32));
+          }
+        }
+      }
       break;
   }
 }
@@ -471,14 +613,44 @@ static void set_pet_animation(uint32_t resource_id) {
   if (s_pet_seq) {
     s_pet_frame_bitmap = gbitmap_create_blank(gbitmap_sequence_get_bitmap_size(s_pet_seq), GBitmapFormat8Bit);
     gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
+    if (s_pet_frame_delay_ms == 0) {
+      s_pet_frame_delay_ms = FRAME_MS;
+    }
     s_pet_frame_elapsed_ms = 0;
   }
 }
 
 static void trigger_breeding(void) {
+  if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    if (s_gubby_count < MAX_GUBBYS) {
+      int x = 16 + (rand() % (GABAGOOL_SCREEN_W - 48));
+      int y = 20 + (rand() % (GABAGOOL_SCREEN_H / 2));
+      int index = spawn_gubby_at(x, y);
+      GubbyPet *gubby = gubby_at(index);
+      if (gubby) {
+        gubby->fvy = -4.0f;
+      }
+    } else {
+      for (int i = 0; i < MAX_GUBBYS; i++) {
+        GubbyPet *gubby = gubby_at(i);
+        if (gubby) {
+          gubby->fvy = -3.0f - (rand() % 100) / 80.0f;
+          gubby->fvx += (rand() % 2 == 0 ? 1.0f : -1.0f);
+        }
+      }
+    }
+    s_rub_count = 0;
+    s_last_rub_dir = 0;
+    s_flash_frames = 2;
+    play_gubby_sfx();
+    return;
+  }
   s_pet_state = PetStateEgg;
   s_egg_taps = 0;
   s_pet_grabbed = false;
+  s_grabbed_gubby = -1;
+  memset(s_gubbys, 0, sizeof(s_gubbys));
+  s_gubby_count = 0;
   s_rub_count = 0;
   s_last_rub_dir = 0;
   s_flash_frames = 4;
@@ -494,12 +666,9 @@ static void update_pet_logic(void) {
     }
     if (s_hatch_progress >= 100) {
       s_pet_state = PetStateNormal;
-      s_pet_x = 84;
-      s_pet_y = 114;
-      s_pet_fx = 84.0f;
-      s_pet_fy = 114.0f;
-      s_pet_fvx = 1.5f;
-      s_pet_fvy = 0.0f;
+      memset(s_gubbys, 0, sizeof(s_gubbys));
+      s_gubby_count = 0;
+      spawn_gubby_at(84, 114);
       s_last_pet_time = time(NULL);
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
@@ -512,7 +681,7 @@ static void update_pet_logic(void) {
     if (time(NULL) - s_last_pet_time > 180) {
       s_pet_state = PetStateDead;
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
-      set_pet_animation(0);
+      set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
       return;
     }
 
@@ -525,50 +694,58 @@ static void update_pet_logic(void) {
       }
     }
 
-    if (!s_pet_grabbed) {
-      s_pet_fvy += PET_GRAVITY;
-      s_pet_fvx = clamp_float(s_pet_fvx, -PET_MAX_SPEED, PET_MAX_SPEED);
-      s_pet_fvy = clamp_float(s_pet_fvy, -PET_MAX_SPEED, PET_MAX_SPEED);
-      s_pet_fx += s_pet_fvx;
-      s_pet_fy += s_pet_fvy;
+    for (int i = 0; i < MAX_GUBBYS; i++) {
+      GubbyPet *gubby = gubby_at(i);
+      if (!gubby || gubby->grabbed) {
+        continue;
+      }
+      gubby->fvy += PET_GRAVITY;
+      gubby->fvx = clamp_float(gubby->fvx, -PET_MAX_SPEED, PET_MAX_SPEED);
+      gubby->fvy = clamp_float(gubby->fvy, -PET_MAX_SPEED, PET_MAX_SPEED);
+      gubby->fx += gubby->fvx;
+      gubby->fy += gubby->fvy;
 
-      if (s_pet_fx <= 0) {
-        s_pet_fx = 0;
-        s_pet_fvx = -s_pet_fvx * PET_WALL_BOUNCE;
-      } else if (s_pet_fx >= GABAGOOL_SCREEN_W - 32) {
-        s_pet_fx = GABAGOOL_SCREEN_W - 32;
-        s_pet_fvx = -s_pet_fvx * PET_WALL_BOUNCE;
+      if (gubby->fx <= 0) {
+        gubby->fx = 0;
+        gubby->fvx = -gubby->fvx * PET_WALL_BOUNCE;
+      } else if (gubby->fx >= GABAGOOL_SCREEN_W - 32) {
+        gubby->fx = GABAGOOL_SCREEN_W - 32;
+        gubby->fvx = -gubby->fvx * PET_WALL_BOUNCE;
       }
 
-      if (s_pet_fy <= 0) {
-        s_pet_fy = 0;
-        s_pet_fvy = -s_pet_fvy * PET_CEILING_BOUNCE;
-      } else if (s_pet_fy >= GABAGOOL_SCREEN_H - 32) {
-        s_pet_fy = GABAGOOL_SCREEN_H - 32;
-        s_pet_fvy = -s_pet_fvy * PET_FLOOR_BOUNCE;
-        s_pet_fvx *= PET_FLOOR_FRICTION;
-        
-        if (s_pet_fvy < 0 && s_pet_fvy > -1.0f) {
-          s_pet_fvy = 0;
+      if (gubby->fy <= 0) {
+        gubby->fy = 0;
+        gubby->fvy = -gubby->fvy * PET_CEILING_BOUNCE;
+      } else if (gubby->fy >= GABAGOOL_SCREEN_H - 32) {
+        gubby->fy = GABAGOOL_SCREEN_H - 32;
+        gubby->fvy = -gubby->fvy * PET_FLOOR_BOUNCE;
+        gubby->fvx *= PET_FLOOR_FRICTION;
+
+        if (gubby->fvy < 0 && gubby->fvy > -1.0f) {
+          gubby->fvy = 0;
         }
-        if (s_pet_fvx > -0.2f && s_pet_fvx < 0.2f) {
-          s_pet_fvx = (rand() % 2 == 0 ? 1.0f : -1.0f) * (1.2f + (rand() % 100) / 150.0f);
+        if (gubby->fvx > -0.2f && gubby->fvx < 0.2f) {
+          gubby->fvx = (rand() % 2 == 0 ? 1.0f : -1.0f) * (1.2f + (rand() % 100) / 150.0f);
         }
       }
 
-      s_pet_x = (int)s_pet_fx;
-      s_pet_y = (int)s_pet_fy;
+      gubby->x = (int)gubby->fx;
+      gubby->y = (int)gubby->fy;
     }
+    sync_primary_pet_position();
   }
 
   if (s_pet_seq && s_pet_frame_bitmap) {
     s_pet_frame_elapsed_ms += FRAME_MS;
-    if (s_pet_frame_elapsed_ms >= s_pet_frame_delay_ms) {
-      s_pet_frame_elapsed_ms = 0;
+    while (s_pet_frame_elapsed_ms >= s_pet_frame_delay_ms) {
+      s_pet_frame_elapsed_ms -= s_pet_frame_delay_ms;
       bool next_frame = gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
       if (!next_frame) {
         gbitmap_sequence_restart(s_pet_seq);
         gbitmap_sequence_update_bitmap_next_frame(s_pet_seq, s_pet_frame_bitmap, &s_pet_frame_delay_ms);
+      }
+      if (s_pet_frame_delay_ms == 0) {
+        s_pet_frame_delay_ms = FRAME_MS;
       }
     }
   }
@@ -589,6 +766,11 @@ static void frame_timer_callback(void *context) {
   }
 
   update_pet_logic();
+#if defined(PBL_SPEAKER)
+  if (s_sfx_cooldown_ms > 0) {
+    s_sfx_cooldown_ms -= GABAGOOL_MIN(s_sfx_cooldown_ms, FRAME_MS);
+  }
+#endif
 
   layer_mark_dirty(s_canvas);
   s_frame_timer = app_timer_register(FRAME_MS, frame_timer_callback, NULL);
@@ -613,6 +795,7 @@ static void audio_reset_decoder(void) {
   s_audio_step_index = 10;
   s_audio_handle = resource_get_handle(track->chunk_resource_ids[0]);
   s_audio_chunk_size = resource_size(s_audio_handle);
+  s_audio_resample_error = 0;
   s_pcm_count = 0;
   s_pcm_offset = 0;
 }
@@ -678,8 +861,10 @@ static bool decode_next_audio_block(void) {
     for (int shift = 0; shift < 8 && s_audio_samples_remaining > 0; shift += 2) {
       uint8_t code = (packed >> shift) & 0x3;
       int8_t sample = (int8_t)decode_audio_code(code);
-      for (int repeat = 0; repeat < GABAGOOL_AUDIO_UPSAMPLE; repeat++) {
+      s_audio_resample_error += GABAGOOL_AUDIO_RATE;
+      while (s_audio_resample_error >= GABAGOOL_AUDIO_SOURCE_RATE && s_pcm_count < AUDIO_PCM_BUFFER) {
         s_pcm_buffer[s_pcm_count++] = sample;
+        s_audio_resample_error -= GABAGOOL_AUDIO_SOURCE_RATE;
       }
       s_audio_samples_remaining--;
     }
@@ -687,22 +872,28 @@ static bool decode_next_audio_block(void) {
   return s_pcm_count > 0;
 }
 
-static void play_random_track(void) {
+static int random_music_track_except(int current_track) {
+  if (GABAGOOL_MUSIC_TRACK_COUNT == 0) {
+    return 0;
+  }
   if (GABAGOOL_MUSIC_TRACK_COUNT > 1) {
-    int next_track = s_audio_track_index;
-    while (next_track == s_audio_track_index) {
+    int next_track = current_track;
+    while (next_track == current_track) {
       next_track = GABAGOOL_MUSIC_TRACK_INDEXES[rand() % GABAGOOL_MUSIC_TRACK_COUNT];
     }
-    s_audio_track_index = next_track;
-  } else if (GABAGOOL_MUSIC_TRACK_COUNT == 1) {
-    s_audio_track_index = GABAGOOL_MUSIC_TRACK_INDEXES[0];
-  } else {
-    s_audio_track_index = 0;
+    return next_track;
   }
+  return GABAGOOL_MUSIC_TRACK_INDEXES[0];
+}
+
+static void play_random_track(void) {
+  s_audio_playing_sfx = false;
+  s_audio_resume_track_index = -1;
+  s_audio_track_index = random_music_track_except(s_audio_track_index);
   start_audio();
 }
 
-static void play_track(int track_index) {
+static void play_track(int track_index, bool is_sfx) {
   if (track_index < 0 || track_index >= GABAGOOL_AUDIO_TRACK_COUNT) {
     return;
   }
@@ -710,12 +901,18 @@ static void play_track(int track_index) {
     stop_audio();
   }
   s_audio_track_index = track_index;
+  s_audio_playing_sfx = is_sfx;
   start_audio();
 }
 
 static void play_gubby_sfx(void) {
 #if GABAGOOL_GUBBY_SFX_TRACK_INDEX >= 0
-  play_track(GABAGOOL_GUBBY_SFX_TRACK_INDEX);
+  if (s_sfx_cooldown_ms > 0 || s_audio_playing_sfx) {
+    return;
+  }
+  s_sfx_cooldown_ms = SFX_COOLDOWN_MS;
+  s_audio_resume_track_index = s_audio_active ? s_audio_track_index : random_music_track_except(-1);
+  play_track(GABAGOOL_GUBBY_SFX_TRACK_INDEX, true);
 #endif
 }
 
@@ -731,7 +928,14 @@ static void audio_pump_callback(void *context) {
       if (!decode_next_audio_block()) {
         speaker_stream_close();
         s_audio_active = false;
-        play_random_track();
+        if (s_audio_playing_sfx) {
+          s_audio_playing_sfx = false;
+          s_audio_track_index = (s_audio_resume_track_index >= 0) ? s_audio_resume_track_index : random_music_track_except(-1);
+          s_audio_resume_track_index = -1;
+          start_audio();
+        } else {
+          play_random_track();
+        }
         return;
       }
     }
@@ -840,6 +1044,9 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     s_pet_state = PetStateHatching;
     s_hatch_progress = 0;
   } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
+    if (s_gubby_count == 0) {
+      spawn_gubby_at(84, 114);
+    }
     s_pet_state = PetStatePetted;
     s_pet_petted_frames = 0;
     s_last_pet_time = time(NULL);
@@ -850,6 +1057,10 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     s_pet_state = PetStateEgg;
     s_egg_taps = 0;
     persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+    set_pet_animation(0);
+    memset(s_gubbys, 0, sizeof(s_gubbys));
+    s_gubby_count = 0;
+    s_grabbed_gubby = -1;
   }
   redraw_now();
 }
@@ -859,13 +1070,19 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   (void)context;
   reset_backlight();
   if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
-    s_pet_grabbed = true;
-    s_pet_fx = (float)s_pet_x;
-    s_pet_fy = (float)s_pet_y;
-    s_pet_fvx = 0.0f;
-    s_pet_fvy = 0.0f;
-    s_last_touch_dx = 0;
-    s_last_touch_dy = 0;
+    if (s_gubby_count == 0) {
+      spawn_gubby_at(84, 114);
+    }
+    s_grabbed_gubby = 0;
+    GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+    if (gubby) {
+      s_pet_grabbed = true;
+      gubby->grabbed = true;
+      gubby->fvx = 0.0f;
+      gubby->fvy = 0.0f;
+      gubby->last_touch_dx = 0;
+      gubby->last_touch_dy = 0;
+    }
     s_rub_count = 0;
     s_last_rub_dir = 0;
   }
@@ -899,9 +1116,12 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
   if (s_pet_grabbed) {
-    set_pet_position(s_pet_x, s_pet_y - 15);
-    s_last_touch_dx = 0;
-    s_last_touch_dy = -15;
+    GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+    set_gubby_position(gubby, gubby ? gubby->x : s_pet_x, (gubby ? gubby->y : s_pet_y) - 15);
+    if (gubby) {
+      gubby->last_touch_dx = 0;
+      gubby->last_touch_dy = -15;
+    }
     if (s_last_rub_dir != -1) {
       s_rub_count++;
       s_last_rub_dir = -1;
@@ -920,9 +1140,12 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
   if (s_pet_grabbed) {
-    set_pet_position(s_pet_x, s_pet_y + 15);
-    s_last_touch_dx = 0;
-    s_last_touch_dy = 15;
+    GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+    set_gubby_position(gubby, gubby ? gubby->x : s_pet_x, (gubby ? gubby->y : s_pet_y) + 15);
+    if (gubby) {
+      gubby->last_touch_dx = 0;
+      gubby->last_touch_dy = 15;
+    }
     if (s_last_rub_dir != 1) {
       s_rub_count++;
       s_last_rub_dir = 1;
@@ -973,18 +1196,33 @@ static void window_load(Window *window) {
     if (time(NULL) - s_last_pet_time > 600) {
       s_pet_state = PetStateDead;
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+      if (s_gubby_count == 0) {
+        spawn_gubby_at(84, 114);
+      }
+      set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
     }
   }
 
   // Load animation if active
   if (s_pet_state == PetStateNormal) {
+    if (s_gubby_count == 0) {
+      spawn_gubby_at(84, 114);
+    }
     set_pet_animation(RESOURCE_ID_PET_GUBBY_ANIM);
   } else if (s_pet_state == PetStatePetted) {
+    if (s_gubby_count == 0) {
+      spawn_gubby_at(84, 114);
+    }
     set_pet_animation(RESOURCE_ID_PET_PETTED_ANIM);
+  } else if (s_pet_state == PetStateDead) {
+    if (s_gubby_count == 0) {
+      spawn_gubby_at(84, 114);
+    }
+    set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
   }
 
 #if defined(PBL_SPEAKER)
-  s_audio_track_index = rand() % GABAGOOL_AUDIO_TRACK_COUNT;
+  s_audio_track_index = GABAGOOL_MUSIC_TRACK_INDEXES[rand() % GABAGOOL_MUSIC_TRACK_COUNT];
 #endif
   start_audio();
 }
@@ -1058,19 +1296,22 @@ static void touch_handler(const TouchEvent *event, void *context) {
         s_hatch_progress = 0;
       }
     } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
-      // Touch down on pet to grab him!
-      if (tx >= s_pet_x && tx <= s_pet_x + 32 && ty >= s_pet_y && ty <= s_pet_y + 32) {
+      int hit = hit_test_gubby(tx, ty);
+      if (hit >= 0) {
+        GubbyPet *gubby = gubby_at(hit);
         s_pet_grabbed = true;
+        s_grabbed_gubby = hit;
+        gubby->grabbed = true;
         s_rub_count = 0;
         s_last_rub_dir = 0;
-        s_pet_grab_offset_x = clamp_int(tx - s_pet_x, 0, 31);
-        s_pet_grab_offset_y = clamp_int(ty - s_pet_y, 0, 31);
-        s_last_touch_x = tx;
-        s_last_touch_y = ty;
-        s_last_touch_dx = 0;
-        s_last_touch_dy = 0;
-        s_pet_fvx = 0.0f;
-        s_pet_fvy = 0.0f;
+        gubby->grab_offset_x = clamp_int(tx - gubby->x, 0, 31);
+        gubby->grab_offset_y = clamp_int(ty - gubby->y, 0, 31);
+        gubby->last_touch_x = tx;
+        gubby->last_touch_y = ty;
+        gubby->last_touch_dx = 0;
+        gubby->last_touch_dy = 0;
+        gubby->fvx = 0.0f;
+        gubby->fvy = 0.0f;
         drag_pet_to(tx, ty);
         
         s_pet_state = PetStatePetted;
@@ -1081,22 +1322,29 @@ static void touch_handler(const TouchEvent *event, void *context) {
         play_gubby_sfx();
       }
     } else if (s_pet_state == PetStateDead) {
-      if (tx >= s_pet_x && tx <= s_pet_x + 32 && ty >= s_pet_y && ty <= s_pet_y + 32) {
+      if (hit_test_gubby(tx, ty) >= 0) {
         s_pet_state = PetStateEgg;
         s_egg_taps = 0;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
+        set_pet_animation(0);
+        memset(s_gubbys, 0, sizeof(s_gubbys));
+        s_gubby_count = 0;
       }
     }
   } else if (event->type == TouchEvent_PositionUpdate) {
     if (s_pet_grabbed) {
-      s_last_touch_dx = tx - s_last_touch_x;
-      s_last_touch_dy = ty - s_last_touch_y;
+      GubbyPet *gubby = gubby_at(s_grabbed_gubby);
+      if (!gubby) {
+        return;
+      }
+      gubby->last_touch_dx = tx - gubby->last_touch_x;
+      gubby->last_touch_dy = ty - gubby->last_touch_y;
       drag_pet_to(tx, ty);
       
       int new_dir = 0;
-      if (ty < s_last_touch_y - 8) {
+      if (ty < gubby->last_touch_y - 8) {
         new_dir = -1;
-      } else if (ty > s_last_touch_y + 8) {
+      } else if (ty > gubby->last_touch_y + 8) {
         new_dir = 1;
       }
       
@@ -1107,8 +1355,8 @@ static void touch_handler(const TouchEvent *event, void *context) {
           trigger_breeding();
         }
       }
-      s_last_touch_x = tx;
-      s_last_touch_y = ty;
+      gubby->last_touch_x = tx;
+      gubby->last_touch_y = ty;
     }
   } else if (event->type == TouchEvent_Liftoff) {
     if (s_pet_grabbed) {

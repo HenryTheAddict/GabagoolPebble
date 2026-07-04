@@ -802,7 +802,7 @@ static void trigger_breeding(void) {
 
 static void update_pet_logic(void) {
   // Egg hold timer
-  if (s_egg_touching && (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3)) {
+  if (s_egg_touching && (s_pet_state <= PetStateEggTap3)) {
     s_egg_hold_ms += FRAME_MS;
     if (s_egg_hold_ms >= EGG_HOLD_MS) {
       s_egg_hold_ms = 0;
@@ -1246,7 +1246,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   reset_backlight();
 
-  if (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3) {
+  if (s_pet_state <= PetStateEggTap3) {
     // Start egg hold timer on button press
     s_egg_touching = true;
     s_egg_hold_ms = 0;
@@ -1479,7 +1479,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
   int ty = event->y;
   
   if (event->type == TouchEvent_Touchdown) {
-    if (s_pet_state >= PetStateEgg && s_pet_state <= PetStateEggTap3) {
+    if (s_pet_state <= PetStateEggTap3) {
       if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
         s_egg_touching = true;
         s_egg_hold_ms = 0;

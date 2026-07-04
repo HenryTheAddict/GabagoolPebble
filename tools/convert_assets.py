@@ -19,9 +19,9 @@ AUDIO_CACHE = GENERATED / "audio_cache.json"
 
 SCREEN_W = 200
 SCREEN_H = 228
-PAN_W = 220
+PAN_W = 260
 AUDIO_RATE = 8000
-AUDIO_SOURCE_RATE = 1500
+AUDIO_SOURCE_RATE = 2000
 AUDIO_MAX_UPSAMPLE = math.ceil(AUDIO_RATE / AUDIO_SOURCE_RATE)
 AUDIO_CHUNK_BYTES = 60 * 1024
 AUDIO_CACHE_VERSION = 1
@@ -95,12 +95,12 @@ def crop_cover_background(image, target_h):
     src_w, src_h = image.size
     scale = target_h / src_h
     new_w = math.ceil(src_w * scale)
-    if new_w > 320:
-        new_w = 320
-        scale = 320 / src_w
+    if new_w > PAN_W:
+        new_w = PAN_W
+        scale = PAN_W / src_w
         if src_h * scale < target_h:
             scale = target_h / src_h
-            new_w = 320
+            new_w = PAN_W
     else:
         if new_w < 200:
             scale = 200 / src_w

@@ -2,21 +2,20 @@
 #include <string.h>
 #include "generated_assets.h"
 
-#define FRAME_MS 33
+#define FRAME_MS 50
 #define SLIDE_MS 7000
 #define HOLD_MS 2000
 #define TRANSITION_MS 900
 #define BACKLIGHT_TIMEOUT_MS (5 * 60 * 1000)
-#define AUDIO_ENCODED_BUFFER 16
-#define AUDIO_PCM_BUFFER (AUDIO_ENCODED_BUFFER * 4 * GABAGOOL_AUDIO_MAX_UPSAMPLE)
-#define AUDIO_STREAM_PASSES 8
+#define AUDIO_PCM_BUFFER 192
+#define AUDIO_STREAM_PASSES 4
 #define GABAGOOL_MIN(a, b) ((a) < (b) ? (a) : (b))
-#define PET_GRAVITY 0.38f
-#define PET_WALL_BOUNCE 0.85f
-#define PET_CEILING_BOUNCE 0.72f
-#define PET_FLOOR_BOUNCE 0.60f
-#define PET_FLOOR_FRICTION 0.94f
-#define PET_MAX_SPEED 8.0f
+#define PET_GRAVITY 0.24f
+#define PET_WALL_BOUNCE 0.72f
+#define PET_CEILING_BOUNCE 0.55f
+#define PET_FLOOR_BOUNCE 0.48f
+#define PET_FLOOR_FRICTION 0.88f
+#define PET_MAX_SPEED 5.5f
 #define MAX_GUBBYS 8
 #define SFX_COOLDOWN_MS 250
 
@@ -73,6 +72,7 @@ static AppTimer *s_frame_timer;
 static AppTimer *s_audio_timer;
 static AppTimer *s_backlight_timer;
 static GBitmap *s_current_bitmap;
+static GBitmap *s_next_bitmap;
 
 static int s_current_index;
 static int s_next_index;
@@ -89,6 +89,7 @@ static int s_pet_y = 98;
 
 static GBitmapSequence *s_pet_seq = NULL;
 static GBitmap *s_pet_frame_bitmap = NULL;
+static uint32_t s_pet_animation_resource_id = 0;
 static uint32_t s_pet_frame_delay_ms = 100;
 static uint32_t s_pet_frame_elapsed_ms = 0;
 
@@ -102,6 +103,8 @@ static int s_pet_petted_frames = 0;
 static GubbyPet s_gubbys[MAX_GUBBYS];
 static int s_gubby_count = 0;
 static int s_grabbed_gubby = -1;
+static GBitmap *s_static_pet_bitmap = NULL;
+static uint32_t s_static_pet_resource_id = 0;
 
 static float s_pet_fx = 84.0f;
 static float s_pet_fy = 98.0f;
@@ -128,7 +131,46 @@ static float clamp_float(float value, float min_value, float max_value) {
   return value;
 }
 
+static void set_static_pet_sprite(uint32_t res_id) {
+  if (s_static_pet_resource_id == res_id) {
+    return;
+  }
+  if (s_static_pet_bitmap) {
+    gbitmap_destroy(s_static_pet_bitmap);
+    s_static_pet_bitmap = NULL;
+  }
+  s_static_pet_resource_id = res_id;
+  if (res_id != 0) {
+    s_static_pet_bitmap = gbitmap_create_with_resource(res_id);
+  }
+}
+
+static void sync_static_pet_sprite(void) {
+  switch (s_pet_state) {
+    case PetStateEgg:
+      set_static_pet_sprite(RESOURCE_ID_PET_EGG);
+      break;
+    case PetStateEggTap1:
+      set_static_pet_sprite(RESOURCE_ID_PET_EGG_TAP1);
+      break;
+    case PetStateEggTap2:
+      set_static_pet_sprite(RESOURCE_ID_PET_EGG_TAP2);
+      break;
+    case PetStateEggTap3:
+    case PetStateHatching:
+      set_static_pet_sprite(RESOURCE_ID_PET_EGG_TAP3);
+      break;
+    case PetStateDead:
+      set_static_pet_sprite(RESOURCE_ID_PET_DEAD);
+      break;
+    default:
+      set_static_pet_sprite(0);
+      break;
+  }
+}
+
 static void redraw_now(void) {
+  sync_static_pet_sprite();
   if (s_canvas) {
     layer_mark_dirty(s_canvas);
   }
@@ -228,25 +270,30 @@ static int hit_test_gubby(int tx, int ty) {
   return -1;
 }
 
-static GBitmap *s_static_pet_bitmap = NULL;
-static uint32_t s_static_pet_resource_id = 0;
-
 #if defined(PBL_SPEAKER)
+typedef struct {
+  bool active;
+  int track_index;
+  ResHandle handle;
+  uint32_t chunk_index;
+  uint32_t chunk_offset;
+  uint32_t chunk_size;
+  uint32_t samples_remaining;
+  int16_t predictor;
+  int step_index;
+  uint32_t resample_error;
+  int8_t current_sample;
+  uint8_t repeat_count;
+  uint8_t packed_byte;
+  uint8_t packed_shift;
+} AudioDecoderState;
+
 static bool s_audio_active;
-static ResHandle s_audio_handle;
-static uint32_t s_audio_chunk_index;
-static uint32_t s_audio_chunk_offset;
-static uint32_t s_audio_chunk_size;
-static uint32_t s_audio_samples_remaining;
-static int16_t s_audio_predictor;
-static int s_audio_step_index;
-static uint8_t s_encoded_buffer[AUDIO_ENCODED_BUFFER];
 static int8_t s_pcm_buffer[AUDIO_PCM_BUFFER];
 static uint32_t s_pcm_count;
 static uint32_t s_pcm_offset;
-static uint32_t s_audio_resample_error;
-static bool s_audio_playing_sfx;
-static int s_audio_resume_track_index = -1;
+static AudioDecoderState s_music_decoder;
+static AudioDecoderState s_sfx_decoder;
 static int s_sfx_cooldown_ms = 0;
 
 static const int16_t s_audio_step_table[] = {
@@ -370,14 +417,16 @@ static void apply_wipe_effect(GContext *ctx, int progress, bool incoming) {
 }
 
 static void swap_to_transition_target(void) {
-  if (s_current_index == s_next_index && s_current_bitmap) {
-    return;
-  }
   if (s_current_bitmap) {
     gbitmap_destroy(s_current_bitmap);
     s_current_bitmap = NULL;
   }
-  s_current_bitmap = load_image(s_next_index);
+  if (s_next_bitmap) {
+    gbitmap_destroy(s_next_bitmap);
+    s_next_bitmap = NULL;
+  }
+  s_current_bitmap = s_next_bitmap;
+  s_next_bitmap = NULL;
   if (s_current_bitmap) {
     s_current_index = s_next_index;
   }
@@ -385,9 +434,6 @@ static void swap_to_transition_target(void) {
 
 static void draw_transition(GContext *ctx) {
   bool incoming = s_transition_ms >= (TRANSITION_MS / 2);
-  if (incoming) {
-    swap_to_transition_target();
-  }
 
   int local_ms = incoming ? (s_transition_ms - (TRANSITION_MS / 2)) : s_transition_ms;
   int progress = (1024 * local_ms) / (TRANSITION_MS / 2);
@@ -399,22 +445,24 @@ static void draw_transition(GContext *ctx) {
 
   if (s_transition_kind == TransitionSlide) {
     int x = (GABAGOOL_SCREEN_W * progress) / 1024;
-    int current_offset = pan_offset_for(s_current_index, incoming ? 0 : SLIDE_MS);
-    int curr_w = GABAGOOL_IMAGE_WIDTHS[s_current_index];
     if (!incoming && s_current_bitmap) {
+      int current_offset = pan_offset_for(s_current_index, SLIDE_MS);
+      int curr_w = GABAGOOL_IMAGE_WIDTHS[s_current_index];
       int target_x = -current_offset - ((curr_w - current_offset) * x) / GABAGOOL_SCREEN_W;
       graphics_draw_bitmap_in_rect(ctx, s_current_bitmap,
                                    GRect(target_x, 0, curr_w, GABAGOOL_SCREEN_H));
-    } else if (incoming && s_current_bitmap) {
+    } else if (incoming && s_next_bitmap) {
+      int current_offset = pan_offset_for(s_next_index, 0);
+      int curr_w = GABAGOOL_IMAGE_WIDTHS[s_next_index];
       int target_x = GABAGOOL_SCREEN_W - ((GABAGOOL_SCREEN_W + current_offset) * x) / GABAGOOL_SCREEN_W;
-      graphics_draw_bitmap_in_rect(ctx, s_current_bitmap,
+      graphics_draw_bitmap_in_rect(ctx, s_next_bitmap,
                                    GRect(target_x, 0, curr_w, GABAGOOL_SCREEN_H));
     }
     return;
   }
 
   if (incoming) {
-    draw_panned_bitmap(ctx, s_current_bitmap, s_current_index, 0);
+    draw_panned_bitmap(ctx, s_next_bitmap, s_next_index, 0);
   } else {
     draw_panned_bitmap(ctx, s_current_bitmap, s_current_index, SLIDE_MS);
   }
@@ -439,14 +487,7 @@ static void draw_transition(GContext *ctx) {
 }
 
 static void draw_static_sprite(GContext *ctx, uint32_t res_id, GRect rect) {
-  if (s_static_pet_resource_id != res_id) {
-    if (s_static_pet_bitmap) {
-      gbitmap_destroy(s_static_pet_bitmap);
-    }
-    s_static_pet_bitmap = gbitmap_create_with_resource(res_id);
-    s_static_pet_resource_id = res_id;
-  }
-  if (s_static_pet_bitmap) {
+  if (s_static_pet_bitmap && s_static_pet_resource_id == res_id) {
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_draw_bitmap_in_rect(ctx, s_static_pet_bitmap, rect);
     graphics_context_set_compositing_mode(ctx, GCompOpAssign);
@@ -456,25 +497,25 @@ static void draw_static_sprite(GContext *ctx, uint32_t res_id, GRect rect) {
 static void draw_center_light(GContext *ctx, int progress) {
   int cx = GABAGOOL_SCREEN_W / 2;
   int cy = GABAGOOL_SCREEN_H / 2;
-  int radius = 16 + progress * 3;
-  if (radius > 150) {
-    radius = 150;
+  int radius = 14 + progress * 2;
+  if (radius > 96) {
+    radius = 96;
   }
 
   graphics_context_set_stroke_width(ctx, 1);
   graphics_context_set_stroke_color(ctx, GColorWhite);
-  for (int y = cy - radius; y <= cy + radius; y++) {
+  for (int y = cy - radius; y <= cy + radius; y += 2) {
     if (y < 0 || y >= GABAGOOL_SCREEN_H) {
       continue;
     }
-    for (int x = cx - radius; x <= cx + radius; x++) {
+    for (int x = cx - radius; x <= cx + radius; x += 2) {
       if (x < 0 || x >= GABAGOOL_SCREEN_W) {
         continue;
       }
       int dx = x - cx;
       int dy = y - cy;
       int dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
-      if (dist < radius && (((x * 3 + y * 5 + progress) & 7) == 0)) {
+      if (dist < radius && (((x * 3 + y * 5 + progress) & 3) == 0)) {
         graphics_draw_pixel(ctx, GPoint(x, y));
       }
     }
@@ -584,20 +625,29 @@ static void begin_transition(int delta) {
     next_idx = rand() % GABAGOOL_IMAGE_COUNT;
   }
   s_next_index = next_idx;
+  if (s_next_bitmap) {
+    gbitmap_destroy(s_next_bitmap);
+    s_next_bitmap = NULL;
+  }
+  s_next_bitmap = load_image(s_next_index);
+  if (!s_next_bitmap) {
+    return;
+  }
   s_transitioning = true;
   s_transition_ms = 0;
   s_transition_kind = (TransitionKind)((s_transition_kind + 1) % TransitionCount);
 }
 
 static void finish_transition(void) {
-  if (s_current_index != s_next_index) {
-    swap_to_transition_target();
-  }
+  swap_to_transition_target();
   s_phase_ms = 0;
   s_transitioning = false;
 }
 
 static void set_pet_animation(uint32_t resource_id) {
+  if (s_pet_animation_resource_id == resource_id) {
+    return;
+  }
   if (s_pet_seq) {
     gbitmap_sequence_destroy(s_pet_seq);
     s_pet_seq = NULL;
@@ -606,6 +656,7 @@ static void set_pet_animation(uint32_t resource_id) {
     gbitmap_destroy(s_pet_frame_bitmap);
     s_pet_frame_bitmap = NULL;
   }
+  s_pet_animation_resource_id = resource_id;
   if (resource_id == 0) {
     return;
   }
@@ -623,12 +674,13 @@ static void set_pet_animation(uint32_t resource_id) {
 static void trigger_breeding(void) {
   if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count < MAX_GUBBYS) {
-      int x = 16 + (rand() % (GABAGOOL_SCREEN_W - 48));
-      int y = 20 + (rand() % (GABAGOOL_SCREEN_H / 2));
+      int x = (GABAGOOL_SCREEN_W / 2 - 16) + ((rand() % 41) - 20);
+      int y = 22 + (rand() % 28);
       int index = spawn_gubby_at(x, y);
       GubbyPet *gubby = gubby_at(index);
       if (gubby) {
-        gubby->fvy = -4.0f;
+        gubby->fvx = ((rand() % 101) - 50) / 45.0f;
+        gubby->fvy = -2.8f - (rand() % 100) / 120.0f;
       }
     } else {
       for (int i = 0; i < MAX_GUBBYS; i++) {
@@ -772,6 +824,7 @@ static void frame_timer_callback(void *context) {
   }
 #endif
 
+  sync_static_pet_sprite();
   layer_mark_dirty(s_canvas);
   s_frame_timer = app_timer_register(FRAME_MS, frame_timer_callback, NULL);
 }
@@ -786,20 +839,6 @@ static void audio_cancel_timer(void) {
   }
 }
 
-static void audio_reset_decoder(void) {
-  const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[s_audio_track_index];
-  s_audio_chunk_index = 0;
-  s_audio_chunk_offset = 0;
-  s_audio_samples_remaining = track->total_samples;
-  s_audio_predictor = 0;
-  s_audio_step_index = 10;
-  s_audio_handle = resource_get_handle(track->chunk_resource_ids[0]);
-  s_audio_chunk_size = resource_size(s_audio_handle);
-  s_audio_resample_error = 0;
-  s_pcm_count = 0;
-  s_pcm_offset = 0;
-}
-
 static int16_t clamp_audio(int16_t value) {
   if (value < -128) {
     return -128;
@@ -810,66 +849,105 @@ static int16_t clamp_audio(int16_t value) {
   return value;
 }
 
-static int decode_audio_code(uint8_t code) {
-  int16_t step = s_audio_step_table[s_audio_step_index];
+static int decode_audio_code(AudioDecoderState *decoder, uint8_t code) {
+  int16_t step = s_audio_step_table[decoder->step_index];
   int16_t diff = step / 2;
   if (code & 1) {
     diff += step;
   }
   if (code & 2) {
-    s_audio_predictor -= diff;
+    decoder->predictor -= diff;
   } else {
-    s_audio_predictor += diff;
+    decoder->predictor += diff;
   }
-  s_audio_predictor = clamp_audio(s_audio_predictor);
-  s_audio_step_index += (code & 1) ? 2 : -1;
-  if (s_audio_step_index < 0) {
-    s_audio_step_index = 0;
-  } else if (s_audio_step_index >= (int)ARRAY_LENGTH(s_audio_step_table)) {
-    s_audio_step_index = ARRAY_LENGTH(s_audio_step_table) - 1;
+  decoder->predictor = clamp_audio(decoder->predictor);
+  decoder->step_index += (code & 1) ? 2 : -1;
+  if (decoder->step_index < 0) {
+    decoder->step_index = 0;
+  } else if (decoder->step_index >= (int)ARRAY_LENGTH(s_audio_step_table)) {
+    decoder->step_index = ARRAY_LENGTH(s_audio_step_table) - 1;
   }
-  return s_audio_predictor;
+  return decoder->predictor;
 }
 
-static bool decode_next_audio_block(void) {
-  const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[s_audio_track_index];
-  if (s_audio_samples_remaining == 0 || s_audio_chunk_index >= track->chunk_count) {
+static void audio_decoder_start(AudioDecoderState *decoder, int track_index) {
+  if (track_index < 0 || track_index >= GABAGOOL_AUDIO_TRACK_COUNT) {
+    memset(decoder, 0, sizeof(*decoder));
+    return;
+  }
+  const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[track_index];
+  memset(decoder, 0, sizeof(*decoder));
+  decoder->active = true;
+  decoder->track_index = track_index;
+  decoder->samples_remaining = track->total_samples;
+  decoder->predictor = 0;
+  decoder->step_index = 10;
+  decoder->packed_shift = 8;
+  decoder->handle = resource_get_handle(track->chunk_resource_ids[0]);
+  decoder->chunk_size = resource_size(decoder->handle);
+}
+
+static bool audio_decoder_read_byte(AudioDecoderState *decoder, uint8_t *byte) {
+  const GabagoolAudioTrack *track = &GABAGOOL_AUDIO_TRACKS[decoder->track_index];
+  if (!decoder->active || decoder->chunk_index >= track->chunk_count) {
     return false;
   }
 
-  if (s_audio_chunk_offset >= s_audio_chunk_size) {
-    s_audio_chunk_index++;
-    s_audio_chunk_offset = 0;
-    if (s_audio_chunk_index >= track->chunk_count) {
+  if (decoder->chunk_offset >= decoder->chunk_size) {
+    decoder->chunk_index++;
+    decoder->chunk_offset = 0;
+    if (decoder->chunk_index >= track->chunk_count) {
       return false;
     }
-    s_audio_handle = resource_get_handle(track->chunk_resource_ids[s_audio_chunk_index]);
-    s_audio_chunk_size = resource_size(s_audio_handle);
+    decoder->handle = resource_get_handle(track->chunk_resource_ids[decoder->chunk_index]);
+    decoder->chunk_size = resource_size(decoder->handle);
   }
 
-  size_t to_read = GABAGOOL_MIN((size_t)AUDIO_ENCODED_BUFFER, s_audio_chunk_size - s_audio_chunk_offset);
-  size_t read = resource_load_byte_range(s_audio_handle, s_audio_chunk_offset, s_encoded_buffer, to_read);
+  size_t read = resource_load_byte_range(decoder->handle, decoder->chunk_offset, byte, 1);
   if (read == 0) {
     return false;
   }
-  s_audio_chunk_offset += read;
+  decoder->chunk_offset++;
+  return true;
+}
 
-  s_pcm_count = 0;
-  s_pcm_offset = 0;
-  for (size_t i = 0; i < read && s_audio_samples_remaining > 0; i++) {
-    uint8_t packed = s_encoded_buffer[i];
-    for (int shift = 0; shift < 8 && s_audio_samples_remaining > 0; shift += 2) {
-      uint8_t code = (packed >> shift) & 0x3;
-      int8_t sample = (int8_t)decode_audio_code(code);
-      s_audio_resample_error += GABAGOOL_AUDIO_RATE;
-      while (s_audio_resample_error >= GABAGOOL_AUDIO_SOURCE_RATE && s_pcm_count < AUDIO_PCM_BUFFER) {
-        s_pcm_buffer[s_pcm_count++] = sample;
-        s_audio_resample_error -= GABAGOOL_AUDIO_SOURCE_RATE;
-      }
-      s_audio_samples_remaining--;
+static bool audio_decoder_next_source_sample(AudioDecoderState *decoder) {
+  if (!decoder->active || decoder->samples_remaining == 0) {
+    decoder->active = false;
+    return false;
+  }
+
+  if (decoder->packed_shift >= 8) {
+    if (!audio_decoder_read_byte(decoder, &decoder->packed_byte)) {
+      decoder->active = false;
+      return false;
+    }
+    decoder->packed_shift = 0;
+  }
+
+  uint8_t code = (decoder->packed_byte >> decoder->packed_shift) & 0x3;
+  decoder->packed_shift += 2;
+  decoder->current_sample = (int8_t)decode_audio_code(decoder, code);
+  decoder->samples_remaining--;
+
+  decoder->resample_error += GABAGOOL_AUDIO_RATE;
+  decoder->repeat_count = 0;
+  while (decoder->resample_error >= GABAGOOL_AUDIO_SOURCE_RATE) {
+    decoder->repeat_count++;
+    decoder->resample_error -= GABAGOOL_AUDIO_SOURCE_RATE;
+  }
+  return true;
+}
+
+static bool audio_decoder_next_output_sample(AudioDecoderState *decoder, int8_t *sample) {
+  while (decoder->repeat_count == 0) {
+    if (!audio_decoder_next_source_sample(decoder)) {
+      return false;
     }
   }
-  return s_pcm_count > 0;
+  *sample = decoder->current_sample;
+  decoder->repeat_count--;
+  return true;
 }
 
 static int random_music_track_except(int current_track) {
@@ -887,33 +965,49 @@ static int random_music_track_except(int current_track) {
 }
 
 static void play_random_track(void) {
-  s_audio_playing_sfx = false;
-  s_audio_resume_track_index = -1;
   s_audio_track_index = random_music_track_except(s_audio_track_index);
-  start_audio();
-}
-
-static void play_track(int track_index, bool is_sfx) {
-  if (track_index < 0 || track_index >= GABAGOOL_AUDIO_TRACK_COUNT) {
-    return;
+  audio_decoder_start(&s_music_decoder, s_audio_track_index);
+  if (!s_audio_active) {
+    start_audio();
   }
-  if (s_audio_active) {
-    stop_audio();
-  }
-  s_audio_track_index = track_index;
-  s_audio_playing_sfx = is_sfx;
-  start_audio();
 }
 
 static void play_gubby_sfx(void) {
 #if GABAGOOL_GUBBY_SFX_TRACK_INDEX >= 0
-  if (s_sfx_cooldown_ms > 0 || s_audio_playing_sfx) {
+  if (s_sfx_cooldown_ms > 0) {
     return;
   }
   s_sfx_cooldown_ms = SFX_COOLDOWN_MS;
-  s_audio_resume_track_index = s_audio_active ? s_audio_track_index : random_music_track_except(-1);
-  play_track(GABAGOOL_GUBBY_SFX_TRACK_INDEX, true);
+  audio_decoder_start(&s_sfx_decoder, GABAGOOL_GUBBY_SFX_TRACK_INDEX);
+  if (!s_audio_active) {
+    start_audio();
+  }
 #endif
+}
+
+static bool fill_audio_buffer(void) {
+  s_pcm_count = 0;
+  s_pcm_offset = 0;
+
+  for (uint32_t i = 0; i < AUDIO_PCM_BUFFER; i++) {
+    int8_t music_sample = 0;
+    if (!audio_decoder_next_output_sample(&s_music_decoder, &music_sample)) {
+      s_audio_track_index = random_music_track_except(s_audio_track_index);
+      audio_decoder_start(&s_music_decoder, s_audio_track_index);
+      if (!audio_decoder_next_output_sample(&s_music_decoder, &music_sample)) {
+        return s_pcm_count > 0;
+      }
+    }
+
+    int16_t mixed = music_sample;
+    int8_t sfx_sample = 0;
+    if (audio_decoder_next_output_sample(&s_sfx_decoder, &sfx_sample)) {
+      mixed += sfx_sample;
+    }
+    s_pcm_buffer[s_pcm_count++] = (int8_t)clamp_audio(mixed);
+  }
+
+  return s_pcm_count > 0;
 }
 
 static void audio_pump_callback(void *context) {
@@ -925,17 +1019,9 @@ static void audio_pump_callback(void *context) {
 
   for (int loops = 0; loops < AUDIO_STREAM_PASSES; loops++) {
     if (s_pcm_offset >= s_pcm_count) {
-      if (!decode_next_audio_block()) {
-        speaker_stream_close();
+      if (!fill_audio_buffer()) {
         s_audio_active = false;
-        if (s_audio_playing_sfx) {
-          s_audio_playing_sfx = false;
-          s_audio_track_index = (s_audio_resume_track_index >= 0) ? s_audio_resume_track_index : random_music_track_except(-1);
-          s_audio_resume_track_index = -1;
-          start_audio();
-        } else {
-          play_random_track();
-        }
+        speaker_stream_close();
         return;
       }
     }
@@ -979,7 +1065,9 @@ static void start_audio(void) {
   if (!speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 80)) {
     return;
   }
-  audio_reset_decoder();
+  if (!s_music_decoder.active) {
+    audio_decoder_start(&s_music_decoder, s_audio_track_index);
+  }
   s_audio_active = true;
   audio_schedule(1);
 }
@@ -990,6 +1078,8 @@ static void stop_audio(void) {
     speaker_stream_close();
     s_audio_active = false;
   }
+  s_music_decoder.active = false;
+  s_sfx_decoder.active = false;
 }
 #else
 static void start_audio(void) {
@@ -1220,6 +1310,7 @@ static void window_load(Window *window) {
     }
     set_pet_animation(RESOURCE_ID_PET_DEATH_ANIM);
   }
+  sync_static_pet_sprite();
 
 #if defined(PBL_SPEAKER)
   s_audio_track_index = GABAGOOL_MUSIC_TRACK_INDEXES[rand() % GABAGOOL_MUSIC_TRACK_COUNT];

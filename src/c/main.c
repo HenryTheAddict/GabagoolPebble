@@ -1,5 +1,6 @@
 #include <pebble.h>
 #include <string.h>
+#include <math.h>
 #include "generated_assets.h"
 
 #define FRAME_MS 50
@@ -22,6 +23,36 @@
 #define FLING_KILL_SPEED 9.0f
 #define DEAD_HOLD_MS 3000
 #define AUDIO_READ_BUFFER 128
+#define GABAGOOL_EGG_X ((GABAGOOL_SCREEN_W - 128) / 2)
+#define GABAGOOL_EGG_Y ((GABAGOOL_SCREEN_H - 128) / 2)
+#define GABAGOOL_PET_SPAWN_X ((GABAGOOL_SCREEN_W - 32) / 2)
+#if defined(PBL_ROUND)
+#define SEL_BOX_W 72
+#define SEL_BOX_H 88
+#define SEL_BOX_GAP 8
+#define SEL_TOTAL_W (SEL_BOX_W * 2 + SEL_BOX_GAP)
+#define SEL_BOX_Y 48
+#define SEL_BOX1_X ((GABAGOOL_SCREEN_W - SEL_TOTAL_W) / 2)
+#define SEL_BOX2_X (SEL_BOX1_X + SEL_BOX_W + SEL_BOX_GAP)
+#define SEL_GUBBY_X (SEL_BOX1_X + (SEL_BOX_W - 32) / 2)
+#define SEL_GUBBY_Y (SEL_BOX_Y + 22)
+#define SEL_JP_X (SEL_BOX2_X + (SEL_BOX_W - 40) / 2)
+#define SEL_JP_Y (SEL_BOX_Y + 16)
+#define SEL_TEXT_Y (SEL_BOX_Y + 60)
+#define SEL_TITLE_Y 14
+#else
+#define SEL_BOX_W 72
+#define SEL_BOX_H 88
+#define SEL_BOX1_X 15
+#define SEL_BOX2_X 113
+#define SEL_BOX_Y 58
+#define SEL_GUBBY_X 35
+#define SEL_GUBBY_Y 80
+#define SEL_JP_X 133
+#define SEL_JP_Y 74
+#define SEL_TEXT_Y 118
+#define SEL_TITLE_Y 18
+#endif
 
 // Set to 0 to disable physical button controls (touch-only mode)
 #define DEBUG_BUTTONS 1
@@ -380,6 +411,16 @@ static int hit_test_gubby(int tx, int ty) {
   return -1;
 }
 
+static int hit_test_dead_gubby(int tx, int ty) {
+  for (int i = MAX_GUBBYS - 1; i >= 0; i--) {
+    GubbyPet *gubby = gubby_at(i);
+    if (gubby && tx >= gubby->x - 8 && tx <= gubby->x + 40 && ty >= gubby->y - 8 && ty <= gubby->y + 40) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 #if defined(PBL_SPEAKER)
 typedef struct {
   bool active;
@@ -731,6 +772,16 @@ static void draw_progress_bar(GContext *ctx, int current_ms, int max_ms, GColor 
   if (current_ms <= 0) {
     return;
   }
+#if defined(PBL_ROUND)
+  int progress = (current_ms * 1024) / max_ms;
+  if (progress > 1024) {
+    progress = 1024;
+  }
+  graphics_context_set_fill_color(ctx, base_color);
+  int32_t end_angle = (int32_t)((uint64_t)progress * TRIG_MAX_ANGLE / 1024);
+  graphics_fill_radial(ctx, GRect(0, 0, GABAGOOL_SCREEN_W, GABAGOOL_SCREEN_H),
+                       GOvalScaleModeFitCircle, 4, 0, end_angle);
+#else
   int progress = (current_ms * 1024) / max_ms;
   if (progress > 1024) {
     progress = 1024;
@@ -742,33 +793,30 @@ static void draw_progress_bar(GContext *ctx, int current_ms, int max_ms, GColor 
   graphics_context_set_fill_color(ctx, base_color);
 
   int remaining = fill_len;
-  // Top edge: left to right
   int seg = GABAGOOL_SCREEN_W;
   if (remaining > 0) {
     int len = remaining < seg ? remaining : seg;
     graphics_fill_rect(ctx, GRect(0, 0, len, bar_w), 0, GCornerNone);
     remaining -= len;
   }
-  // Right edge: top to bottom
   seg = GABAGOOL_SCREEN_H - bar_w;
   if (remaining > 0) {
     int len = remaining < seg ? remaining : seg;
     graphics_fill_rect(ctx, GRect(GABAGOOL_SCREEN_W - bar_w, bar_w, bar_w, len), 0, GCornerNone);
     remaining -= len;
   }
-  // Bottom edge: right to left
   seg = GABAGOOL_SCREEN_W - bar_w;
   if (remaining > 0) {
     int len = remaining < seg ? remaining : seg;
     graphics_fill_rect(ctx, GRect(GABAGOOL_SCREEN_W - bar_w - len, GABAGOOL_SCREEN_H - bar_w, len, bar_w), 0, GCornerNone);
     remaining -= len;
   }
-  // Left edge: bottom to top
   seg = GABAGOOL_SCREEN_H - 2 * bar_w;
   if (remaining > 0) {
     int len = remaining < seg ? remaining : seg;
     graphics_fill_rect(ctx, GRect(0, GABAGOOL_SCREEN_H - bar_w - len, bar_w, len), 0, GCornerNone);
   }
+#endif
 }
 
 static void draw_pet(GContext *ctx) {
@@ -794,41 +842,41 @@ static void draw_pet(GContext *ctx) {
       }
 
       graphics_context_set_stroke_color(ctx, GColorWhite);
-      graphics_draw_round_rect(ctx, GRect(15, 58, 72, 88), 6);
-      graphics_draw_round_rect(ctx, GRect(113, 58, 72, 88), 6);
+      graphics_draw_round_rect(ctx, GRect(SEL_BOX1_X, SEL_BOX_Y, SEL_BOX_W, SEL_BOX_H), 6);
+      graphics_draw_round_rect(ctx, GRect(SEL_BOX2_X, SEL_BOX_Y, SEL_BOX_W, SEL_BOX_H), 6);
 
       graphics_context_set_compositing_mode(ctx, GCompOpSet);
       if (s_select_gubby_pet) {
-        graphics_draw_bitmap_in_rect(ctx, s_select_gubby_pet, GRect(35, 80, 32, 32));
+        graphics_draw_bitmap_in_rect(ctx, s_select_gubby_pet, GRect(SEL_GUBBY_X, SEL_GUBBY_Y, 32, 32));
       }
       if (s_select_jp_pet) {
-        graphics_draw_bitmap_in_rect(ctx, s_select_jp_pet, GRect(133, 74, 40, 40));
+        graphics_draw_bitmap_in_rect(ctx, s_select_jp_pet, GRect(SEL_JP_X, SEL_JP_Y, 40, 40));
       }
       graphics_context_set_compositing_mode(ctx, GCompOpAssign);
 
       graphics_context_set_text_color(ctx, GColorWhite);
       graphics_draw_text(ctx, "Choose Pet", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                         GRect(10, 18, 180, 30), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                         GRect(10, SEL_TITLE_Y, GABAGOOL_SCREEN_W - 20, 30), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
       graphics_draw_text(ctx, "Gubby", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                         GRect(15, 118, 72, 24), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                         GRect(SEL_BOX1_X, SEL_TEXT_Y, SEL_BOX_W, 24), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
       graphics_draw_text(ctx, "JP [EXP]", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                         GRect(113, 118, 72, 24), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+                         GRect(SEL_BOX2_X, SEL_TEXT_Y, SEL_BOX_W, 24), GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
       break;
     }
     case PetStateEgg:
-      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG : RESOURCE_ID_JP_EGG, GRect(36, 50, 128, 128));
+      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG : RESOURCE_ID_JP_EGG, GRect(GABAGOOL_EGG_X, GABAGOOL_EGG_Y, 128, 128));
       break;
     case PetStateEggTap1:
-      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP1 : RESOURCE_ID_JP_EGG_TAP1, GRect(36, 50, 128, 128));
+      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP1 : RESOURCE_ID_JP_EGG_TAP1, GRect(GABAGOOL_EGG_X, GABAGOOL_EGG_Y, 128, 128));
       break;
     case PetStateEggTap2:
-      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP2 : RESOURCE_ID_JP_EGG_TAP2, GRect(36, 50, 128, 128));
+      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP2 : RESOURCE_ID_JP_EGG_TAP2, GRect(GABAGOOL_EGG_X, GABAGOOL_EGG_Y, 128, 128));
       break;
     case PetStateEggTap3:
-      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP3 : RESOURCE_ID_JP_EGG_TAP3, GRect(36, 50, 128, 128));
+      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP3 : RESOURCE_ID_JP_EGG_TAP3, GRect(GABAGOOL_EGG_X, GABAGOOL_EGG_Y, 128, 128));
       break;
     case PetStateHatching:
-      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP3 : RESOURCE_ID_JP_EGG_TAP3, GRect(36, 50, 128, 128));
+      draw_static_sprite(ctx, (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_EGG_TAP3 : RESOURCE_ID_JP_EGG_TAP3, GRect(GABAGOOL_EGG_X, GABAGOOL_EGG_Y, 128, 128));
       if (s_hatch_progress < 40) {
         draw_center_light(ctx, s_hatch_progress);
       } else {
@@ -845,7 +893,7 @@ static void draw_pet(GContext *ctx) {
         }
         if (s_pet_frame_bitmap) {
           graphics_context_set_compositing_mode(ctx, GCompOpSet);
-          graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(84, y, 32, 32));
+          graphics_draw_bitmap_in_rect(ctx, s_pet_frame_bitmap, GRect(GABAGOOL_PET_SPAWN_X, y, 32, 32));
           graphics_context_set_compositing_mode(ctx, GCompOpAssign);
         }
       }
@@ -888,8 +936,8 @@ static void draw_pet(GContext *ctx) {
 
   if (s_active_caption) {
     int text_len = (int)strlen(s_active_caption);
-    int target_w = text_len > 30 ? 176 : (text_len > 16 ? 154 : 112);
-    int target_h = text_len > 30 ? 58 : (text_len > 16 ? 44 : 26);
+    int target_w = text_len > 30 ? 160 : (text_len > 16 ? 140 : 112);
+    int target_h = text_len > 30 ? 48 : (text_len > 16 ? 38 : 26);
     int pop = s_caption_age_frames;
     if (pop > 8) {
       pop = 8;
@@ -935,6 +983,47 @@ static void draw_pet(GContext *ctx) {
   }
 }
 
+#if defined(PBL_ROUND)
+static GBitmap *s_round_mask;
+
+static void create_round_mask(void) {
+  s_round_mask = gbitmap_create_blank(GSize(GABAGOOL_SCREEN_W, GABAGOOL_SCREEN_H), GBitmapFormat1Bit);
+  if (!s_round_mask) return;
+  uint8_t *data = gbitmap_get_data(s_round_mask);
+  uint16_t bpr = gbitmap_get_bytes_per_row(s_round_mask);
+  int cx = GABAGOOL_CENTER_X;
+  int cy = GABAGOOL_CENTER_Y;
+  int rr = GABAGOOL_RADIUS * GABAGOOL_RADIUS;
+  for (int y = 0; y < GABAGOOL_SCREEN_H; y++) {
+    for (int x = 0; x < GABAGOOL_SCREEN_W; x++) {
+      int dx = x - cx;
+      int dy = y - cy;
+      uint8_t byte_idx = y * bpr + (x >> 3);
+      if (dx * dx + dy * dy > rr) {
+        data[byte_idx] |= (0x80 >> (x & 7));
+      } else {
+        data[byte_idx] &= ~(0x80 >> (x & 7));
+      }
+    }
+  }
+}
+
+static void destroy_round_mask(void) {
+  if (s_round_mask) {
+    gbitmap_destroy(s_round_mask);
+    s_round_mask = NULL;
+  }
+}
+
+static void draw_round_mask(GContext *ctx) {
+  if (s_round_mask) {
+    graphics_context_set_compositing_mode(ctx, GCompOpClear);
+    graphics_draw_bitmap_in_rect(ctx, s_round_mask, GRect(0, 0, GABAGOOL_SCREEN_W, GABAGOOL_SCREEN_H));
+    graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+  }
+}
+#endif
+
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   (void)layer;
   if (s_transitioning) {
@@ -943,6 +1032,9 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     draw_panned_bitmap(ctx, s_current_index, s_phase_ms);
   }
   draw_pet(ctx);
+#if defined(PBL_ROUND)
+  draw_round_mask(ctx);
+#endif
 }
 
 static void begin_transition(int direction) {
@@ -1087,7 +1179,7 @@ static void update_pet_logic(void) {
       s_pet_state = PetStateNormal;
       memset(s_gubbys, 0, sizeof(s_gubbys));
       s_gubby_count = 0;
-      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
+      spawn_gubby_at(GABAGOOL_PET_SPAWN_X, GABAGOOL_SCREEN_H / 2 - 16);
       s_last_pet_time = time(NULL);
       persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
       persist_write_int(PERSIST_KEY_LAST_PET_TIME, s_last_pet_time);
@@ -1130,6 +1222,28 @@ static void update_pet_logic(void) {
       gubby->fx += gubby->fvx;
       gubby->fy += gubby->fvy;
 
+#if defined(PBL_ROUND)
+      float gx = gubby->fx + 16;
+      float gy = gubby->fy + 16;
+      float gdx = gx - GABAGOOL_CENTER_X;
+      float gdy = gy - GABAGOOL_CENTER_Y;
+      float gdist_sq = gdx * gdx + gdy * gdy;
+      float rlimit = GABAGOOL_RADIUS - 16;
+      if (gdist_sq > rlimit * rlimit) {
+        float gdist = sqrtf(gdist_sq);
+        float gnx = gdx / gdist;
+        float gny = gdy / gdist;
+        gubby->fx = GABAGOOL_CENTER_X + gnx * (rlimit - 0.5f) - 16;
+        gubby->fy = GABAGOOL_CENTER_Y + gny * (rlimit - 0.5f) - 16;
+        float gdot = gubby->fvx * gnx + gubby->fvy * gny;
+        gubby->fvx = (gubby->fvx - 2 * gdot * gnx) * PET_WALL_BOUNCE;
+        gubby->fvy = (gubby->fvy - 2 * gdot * gny) * PET_CEILING_BOUNCE;
+        gubby->fvx *= PET_FLOOR_FRICTION;
+        if (gubby->fvx > -0.15f && gubby->fvx < 0.15f) {
+          gubby->fvx = (rand() % 2 == 0 ? 0.6f : -0.6f) + (rand() % 100) / 200.0f;
+        }
+      }
+#else
       if (gubby->fx <= 0) {
         gubby->fx = 0;
         gubby->fvx = -gubby->fvx * PET_WALL_BOUNCE;
@@ -1155,6 +1269,7 @@ static void update_pet_logic(void) {
           gubby->fvx = (rand() % 2 == 0 ? 0.6f : -0.6f) + (rand() % 100) / 200.0f;
         }
       }
+#endif
 
       // Inter-gubby collision (push apart)
       for (int j = i + 1; j < MAX_GUBBYS; j++) {
@@ -1647,7 +1762,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     vibes_double_pulse();
   } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
+      spawn_gubby_at(GABAGOOL_PET_SPAWN_X, GABAGOOL_SCREEN_H / 2 - 16);
     }
     s_pet_state = PetStatePetted;
     s_pet_petted_frames = 0;
@@ -1669,7 +1784,7 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   reset_backlight();
   if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted) {
     if (s_gubby_count == 0) {
-      spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
+      spawn_gubby_at(GABAGOOL_PET_SPAWN_X, GABAGOOL_SCREEN_H / 2 - 16);
     }
     s_grabbed_gubby = 0;
     GubbyPet *gubby = gubby_at(s_grabbed_gubby);
@@ -1796,6 +1911,9 @@ static void window_load(Window *window) {
   s_current_index = 0;
   s_frame_timer = app_timer_register(FRAME_MS, frame_timer_callback, NULL);
   reset_backlight();
+#if defined(PBL_ROUND)
+  create_round_mask();
+#endif
 
   if (persist_exists(PERSIST_KEY_PET_STATE)) {
     s_pet_state = persist_read_int(PERSIST_KEY_PET_STATE);
@@ -1820,7 +1938,7 @@ static void window_load(Window *window) {
   if (s_pet_state == PetStateEggSelect) {
     load_select_assets();
   } else if (s_pet_state == PetStateNormal || s_pet_state == PetStatePetted || s_pet_state == PetStateDead) {
-    spawn_gubby_at(84, GABAGOOL_SCREEN_H / 2 - 16);
+    spawn_gubby_at(GABAGOOL_PET_SPAWN_X, GABAGOOL_SCREEN_H / 2 - 16);
     uint32_t anim_res = 0;
     if (s_pet_state == PetStateDead) {
       anim_res = (s_pet_species == PetSpeciesGubby) ? RESOURCE_ID_PET_DEATH_ANIM : RESOURCE_ID_JP_DEAD;
@@ -1863,6 +1981,9 @@ static void window_unload(Window *window) {
   }
   free_select_assets();
   flush_tile_cache();
+#if defined(PBL_ROUND)
+  destroy_round_mask();
+#endif
   set_pet_animation(0);
   if (s_canvas) {
     layer_destroy(s_canvas);
@@ -1887,7 +2008,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
       load_select_assets();
       vibes_short_pulse();
     } else if (s_pet_state == PetStateEggSelect) {
-      if (tx >= 10 && tx <= 95) {
+      if (tx >= SEL_BOX1_X && tx <= SEL_BOX1_X + SEL_BOX_W) {
         s_pet_species = PetSpeciesGubby;
         s_pet_state = PetStateEgg;
         s_egg_taps = 0;
@@ -1895,7 +2016,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
         persist_write_int(PERSIST_KEY_PET_SPECIES, s_pet_species);
         vibes_short_pulse();
-      } else if (tx >= 105 && tx <= 190) {
+      } else if (tx >= SEL_BOX2_X && tx <= SEL_BOX2_X + SEL_BOX_W) {
         s_pet_species = PetSpeciesJp;
         s_pet_state = PetStateEgg;
         s_egg_taps = 0;
@@ -1905,28 +2026,28 @@ static void touch_handler(const TouchEvent *event, void *context) {
         vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEgg) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+      if (tx >= GABAGOOL_EGG_X && tx <= GABAGOOL_EGG_X + 128 && ty >= GABAGOOL_EGG_Y && ty <= GABAGOOL_EGG_Y + 128) {
         s_egg_taps = 1;
         s_pet_state = PetStateEggTap1;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
         vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap1) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+      if (tx >= GABAGOOL_EGG_X && tx <= GABAGOOL_EGG_X + 128 && ty >= GABAGOOL_EGG_Y && ty <= GABAGOOL_EGG_Y + 128) {
         s_egg_taps = 2;
         s_pet_state = PetStateEggTap2;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
         vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap2) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+      if (tx >= GABAGOOL_EGG_X && tx <= GABAGOOL_EGG_X + 128 && ty >= GABAGOOL_EGG_Y && ty <= GABAGOOL_EGG_Y + 128) {
         s_egg_taps = 3;
         s_pet_state = PetStateEggTap3;
         persist_write_int(PERSIST_KEY_PET_STATE, s_pet_state);
         vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateEggTap3) {
-      if (tx >= 36 && tx <= 36 + 128 && ty >= 50 && ty <= 50 + 128) {
+      if (tx >= GABAGOOL_EGG_X && tx <= GABAGOOL_EGG_X + 128 && ty >= GABAGOOL_EGG_Y && ty <= GABAGOOL_EGG_Y + 128) {
         s_egg_taps = 4;
         s_pet_state = PetStateHatching;
         s_hatch_progress = 0;
@@ -1960,7 +2081,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
         vibes_short_pulse();
       }
     } else if (s_pet_state == PetStateDead) {
-      if (hit_test_gubby(tx, ty) >= 0) {
+      if (hit_test_dead_gubby(tx, ty) >= 0) {
         s_dead_touching = true;
         s_dead_hold_ms = 0;
       }
